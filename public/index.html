@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SpareSpark</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M18 2 6 18h8l-2 12 12-16h-8z' fill='%23f59e0b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><path d="M18 2 6 18h8l-2 12 12-16h-8z" fill="currentColor"/></svg>
+      <span>SpareSpark</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="console">Assets Console</button>
+      <button class="tab" data-view="coordinator">Coordinator <span id="alertBadge" class="badge-count" hidden>0</span></button>
+      <button class="tab" data-view="dashboard">Dashboard</button>
+      <button class="tab" data-view="knowledge">Knowledge &amp; Inventory</button>
+      <button class="tab" data-view="integration">Integrations</button>
+    </nav>
+    <div class="mode" id="modeLabel" title="How recommendations are produced"></div>
+  </header>
+
+  <main>
+    <!-- Assets Console -->
+    <section id="view-console" class="view active">
+      <div class="kpis" id="consoleKpis"></div>
+      <div class="actions" id="demoActions">
+        <button class="btn primary" id="btnHappy">▶ Run Happy Flow <small>AdamNow</small></button>
+        <button class="btn accent" id="btnHitl">▶ Run Human-in-the-Loop Flow <small>EveThen</small></button>
+        <button class="btn ghost" id="btnReset">Reset Demo</button>
+      </div>
+      <div class="robots" id="robots"></div>
+      <h2 class="section-title">Recent incidents</h2>
+      <div class="table-wrap"><table class="grid" id="incidentTable"></table></div>
+    </section>
+
+    <!-- Coordinator -->
+    <section id="view-coordinator" class="view">
+      <div class="coord">
+        <aside class="coord-list">
+          <h2>Alerts</h2>
+          <div id="alerts"></div>
+          <h2>All incidents</h2>
+          <div id="coordIncidents"></div>
+        </aside>
+        <div class="coord-main" id="coordMain">
+          <div class="empty">No incident selected. Alerts appear here when the Spare Parts Agent cannot find an exact match.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view">
+      <div class="kpi-big" id="dashKpis"></div>
+      <h2 class="section-title">Work orders</h2>
+      <div class="table-wrap"><table class="grid" id="woTable"></table></div>
+    </section>
+
+    <!-- Knowledge & Inventory -->
+    <section id="view-knowledge" class="view">
+      <div class="two-col">
+        <div>
+          <h2 class="section-title">Spare-parts inventory <small>(structured)</small></h2>
+          <div class="table-wrap"><table class="grid" id="partsTable"></table></div>
+          <h2 class="section-title">Try a lookup</h2>
+          <form id="lookupForm" class="inline-form">
+            <input name="part_number" placeholder="Part number, e.g. GR-220-W" required>
+            <input name="robot_model" placeholder="Robot model, e.g. PX-200">
+            <button class="btn primary" type="submit">Find replacement</button>
+          </form>
+          <div id="lookupResult"></div>
+        </div>
+        <div>
+          <h2 class="section-title">Maintenance knowledge <small>(unstructured)</small></h2>
+          <input id="kbFilter" class="search" placeholder="Filter records…">
+          <div id="kbList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Integrations -->
+    <section id="view-integration" class="view">
+      <div class="two-col">
+        <div>
+          <h2 class="section-title">ServiceNow plugin</h2>
+          <p>SpareSpark runs on its own. The optional ServiceNow plugin sends robot incidents here and receives stage updates back as work notes, so coordinators can approve parts from either side.</p>
+          <ol class="steps">
+            <li>Import <code>servicenow-plugin/dist/sparespark-servicenow-update-set.xml</code> into your instance (System Update Sets &gt; Retrieved Update Sets &gt; Import Update Set from XML), then preview and commit.</li>
+            <li>Set the system properties <code>sparespark.base_url</code>, <code>sparespark.api_key</code> and <code>sparespark.inbound_token</code>.</li>
+            <li>Point SpareSpark's <code>SPARESPARK_WEBHOOK_URL</code> at the instance's SpareSpark Scripted REST API <code>/events</code> resource (the full path is shown on the API record).</li>
+          </ol>
+          <div id="configBox"></div>
+        </div>
+        <div>
+          <h2 class="section-title">Outbound webhook log</h2>
+          <div class="table-wrap"><table class="grid" id="webhookTable"></table></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Workflow popup -->
+  <dialog id="workflowDialog" class="dialog">
+    <div class="dialog-head">
+      <div>
+        <div class="dialog-title" id="wfTitle">Workflow</div>
+        <div class="dialog-sub" id="wfSub"></div>
+      </div>
+      <button class="icon-btn" id="wfClose" aria-label="Close">✕</button>
+    </div>
+    <ol class="stepper" id="wfSteps"></ol>
+    <div class="dialog-foot" id="wfFoot"></div>
+  </dialog>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
