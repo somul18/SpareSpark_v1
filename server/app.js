@@ -117,6 +117,7 @@ export function createApp({ dbFile, stepMs, repairMs, vendorMs } = {}) {
       JOIN parts p ON p.id = m.part_id ORDER BY m.created_at DESC, m.id DESC LIMIT 300`).all());
   route('GET', '/api/webhooks', () => db.prepare('SELECT * FROM webhook_log ORDER BY id DESC LIMIT 50').all());
   route('GET', '/api/metrics', () => metrics(db));
+  route('GET', '/api/metrics/timeline', ({ query }) => timeline(db, { days: Number(query.get('days')) || 7 }));
 
   // ----- procurement -----
   route('GET', '/api/vendors', () => db.prepare('SELECT * FROM vendors ORDER BY name').all());
@@ -283,6 +284,85 @@ export function metrics(db) {
     robots_by_status: Object.fromEntries(robots.map((r) => [r.status, r.n])),
     robot_count: robots.reduce((s, r) => s + r.n, 0),
   };
+}
+
+// Day-by-day dashboard data for the slider: for each day, the KPIs as of the end of that day
+// (window = first day through that day) and the same numbers for that day alone.
+// Uses every incident, seeded history and new activity alike.
+export function timeline(db, { days = 7, now = new Date() } = {}) {
+  const H = 3600000;
+  const robots = db.prepare('SELECT COUNT(*) n FROM robots').get().n || 1;
+  const rows = db.prepare(`SELECT i.id, i.created_at, i.resolved_at, i.stage, i.ai_assisted, i.match_type, i.first_time_fix, i.sla_status, i.is_historical,
+      (SELECT MAX(created_at) FROM events e WHERE e.incident_id = i.id) last_event,
+      EXISTS (SELECT 1 FROM purchase_orders po WHERE po.incident_id = i.id AND po.status = 'Received') procured
+    FROM incidents i`).all();
+  const nowMs = now.getTime();
+  const inc = rows.map((r) => {
+    const failed = r.stage === STAGES.FAILED;
+    const closed = r.resolved_at || (failed ? r.last_event : null);
+    let method = null; // how the part was found, for resolved incidents
+    if (r.stage === STAGES.RESOLVED) {
+      method = !r.ai_assisted ? 'Manual pick by planner'
+        : r.procured ? 'Procured after stockout'
+          : r.match_type === 'Exact' ? 'Exact match in inventory'
+            : r.match_type || 'Exact match in inventory';
+    }
+    return { ...r, failed, start: Date.parse(r.created_at), end: closed ? Date.parse(closed) : null, method };
+  });
+  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const first = midnight - days * 86400000;
+  const overlapH = (a, b) => inc.reduce((sum, i) => {
+    const s = Math.max(i.start, a), e = Math.min(i.end ?? nowMs, b);
+    return e > s ? sum + (e - s) / H : sum;
+  }, 0);
+  const kpis = (from, to) => {
+    const closedIn = inc.filter((i) => i.end !== null && i.end >= from && i.end <= to);
+    const repaired = closedIn.filter((i) => i.first_time_fix !== null);
+    const sla = closedIn.filter((i) => i.sla_status === 'Met' || i.sla_status === 'Breached');
+    const down = overlapH(from, to);
+    const hours = Math.max(0, (to - from) / H);
+    const cohort = (ai) => {
+      const c = closedIn.filter((i) => !!i.ai_assisted === ai);
+      const rep = c.filter((i) => i.first_time_fix !== null);
+      const res = c.filter((i) => i.stage === STAGES.RESOLVED);
+      return {
+        incidents: inc.filter((i) => !!i.ai_assisted === ai && i.start >= from && i.start <= to).length,
+        first_time_fix_rate: rep.length ? rep.filter((i) => i.first_time_fix === 1).length / rep.length : null,
+        sla_attainment: c.filter((i) => i.sla_status).length ? c.filter((i) => i.sla_status === 'Met').length / c.filter((i) => i.sla_status).length : null,
+        avg_resolution_seconds: res.length ? res.reduce((s, i) => s + (i.end - i.start) / 1000, 0) / res.length : null,
+      };
+    };
+    const methods = {};
+    for (const i of closedIn) if (i.method) methods[i.method] = (methods[i.method] || 0) + 1;
+    return {
+      robot_availability: hours ? Math.max(0, 1 - down / (robots * hours)) : null,
+      downtime_hours: down,
+      new_incidents: inc.filter((i) => i.start >= from && i.start <= to).length,
+      resolved_incidents: closedIn.filter((i) => i.stage === STAGES.RESOLVED).length,
+      first_time_fix_rate: repaired.length ? repaired.filter((i) => i.first_time_fix === 1).length / repaired.length : null,
+      sla_attainment: sla.length ? sla.filter((i) => i.sla_status === 'Met').length / sla.length : null,
+      ai_recovered_parts: closedIn.filter((i) => i.stage === STAGES.RESOLVED && i.match_type && i.match_type !== 'Exact').length,
+      part_discovery: methods,
+      ai_vs_manual: { ai: cohort(true), manual: cohort(false) },
+    };
+  };
+  const out = [];
+  for (let d = days; d >= 0; d -= 1) {
+    const dayStart = midnight - d * 86400000;
+    const dayEnd = Math.min(dayStart + 86400000 - 1, nowMs);
+    const open = inc.filter((i) => i.start <= dayEnd && (i.end === null || i.end > dayEnd));
+    const created = inc.filter((i) => i.start >= dayStart && i.start <= dayEnd);
+    out.push({
+      date: new Date(dayStart).toISOString().slice(0, 10),
+      today: d === 0,
+      open_incidents: open.length,
+      robots_down: new Set(open.map((i) => i.id)).size,
+      incidents: { total: created.length, ai: created.filter((i) => i.ai_assisted).length, manual: created.filter((i) => !i.ai_assisted).length },
+      day: kpis(dayStart, dayEnd),
+      to_date: kpis(first, dayEnd),
+    });
+  }
+  return { robots, days: out };
 }
 
 function serializeIncident(db, workflow, id, { compact = false } = {}) {

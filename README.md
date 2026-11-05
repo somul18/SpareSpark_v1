@@ -208,16 +208,34 @@ Alerts for incidents waiting on a part decision, the Spare Parts Agent's recomme
 
 ### Dashboard (VP of Operations)
 
-The dashboard covers all incidents, history plus new, and says how many of each it is counting.
+The dashboard reports on every incident: the week of history plus anything the demo flows create. A **day slider** at the top picks a day from a week ago up to today. **Play** steps through the days automatically, and you can also click a day on the line chart. A switch next to the slider chooses what the widgets cover:
+- **Week to date:** from the first day through the end of the selected day.
+- **That day only:** just the selected day.
 
-- **Operational KPIs:** open robot incidents, first-time fix rate, SLA attainment, and parts recovered by AI from unstructured data.
-- **AI-assisted vs manual:** first-time fix, SLA attainment and average time to resolve, side by side. A check mark shows the better side.
-- **Incidents per day:** a chart of the last 7 days and today, split into AI-assisted and manual. Hover over a bar for the numbers.
-- **Procurement KPIs:** open POs, awaiting delivery and value on order, spend, average PO cycle time, on-time delivery, and stockouts with the repairs procurement unblocked.
+Each widget's small print shows the other view.
 
-Every number is computed from the application's own records.
+| Widget | What it shows |
+|---|---|
+| Robot availability | Share of robot-hours with no open incident (4 robots × hours in range) |
+| Open incidents | Incidents still open at the end of the selected day, plus how many were reported that day |
+| First-time fix rate | Repairs closed in range that were fixed on the first visit |
+| SLA attainment | Incidents closed in range within their SLA |
+| AI-recovered parts | Repairs where SpareSpark found a substitute in maintenance knowledge instead of the exact part |
+| Downtime hours | Robot hours lost to open incidents in range |
+
+Below the widgets:
+- **Maintenance incidents over time:** a line chart of incidents reported per day, AI-assisted and manual. The selected day is marked, later days are dimmed, and hovering a day shows its numbers.
+- **Part discovery methods:** how the part was found for each repair closed in range: exact match in inventory, documented supersession, potential alternative, or procured after a stockout (all found by SpareSpark), versus a manual pick by the planner.
+- **AI-assisted vs manual:** first-time fix, SLA attainment and average time to resolve side by side for the same range. A check mark shows the better side.
+- **Procurement KPIs** (all data): open POs, awaiting delivery and value on order, spend, average PO cycle time, on-time delivery, and stockouts with the repairs procurement unblocked.
+
+Every number is computed from the application's own records, by `GET /api/metrics/timeline`.
 
 ![Dashboard](docs/screenshots/16-dashboard.png)
+
+The same dashboard with the slider moved back to an earlier day, early in the week when most repairs were still manual:
+
+![Dashboard, earlier day](docs/screenshots/24-dashboard-earlier-day.png)
 
 ### Work Orders & Incidents
 
@@ -381,6 +399,7 @@ All endpoints are JSON under `/api`. Set `SPARESPARK_API_KEY` to require an `X-A
 | GET/POST | `/robots` | List or upsert robots, e.g. from a CMDB: `{ name, model, robot_type?, location?, external_ci_id? }`. |
 | GET | `/parts`, `/fault-codes`, `/technicians`, `/work-orders`, `/inventory-movements` | Reference data and stock movements. |
 | GET | `/metrics` | Operational and procurement KPIs. |
+| GET | `/metrics/timeline` | Day-by-day dashboard data for the last 7 days and today: open incidents, incidents reported (AI-assisted and manual), and for each day both *that day* and *week to date*: availability, downtime, first-time fix, SLA, AI-recovered parts, part discovery methods, AI vs manual. |
 | GET | `/events`, `/webhooks` | Event log and outbound webhook log. |
 | GET | `/health`, `/config` | Health check and server settings (no key required). |
 | POST | `/demo/happy`, `/demo/hitl`, `/demo/procurement`, `/demo/reset` | Demo controls. |
@@ -453,7 +472,7 @@ Copy `.env.example` to `.env`; `npm start` loads it automatically.
 npm test
 ```
 
-16 tests cover:
+17 tests cover:
 - the exact match;
 - GR-220-W2 found from real sources, with messy wording matched and no invented references;
 - that the recommendation follows the data rather than a hardcoded answer;
@@ -463,6 +482,7 @@ npm test
 - rejection of a PO;
 - duplicate prevention, and a reset that keeps the history;
 - AI-assisted vs manual metrics and the daily series over history plus new data;
+- the dashboard timeline: day-by-day KPIs that follow new flows;
 - the LLM grounding guard;
 - the ServiceNow scripts against a live SpareSpark server.
 
