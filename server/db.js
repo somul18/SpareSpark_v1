@@ -2,7 +2,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { seed, seedProcurement } from './seed.js';
+import { seed, seedMissing } from './seed.js';
+import { seedHistory } from './history.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS robots (
@@ -183,6 +184,17 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   shipped_at TEXT,
   received_at TEXT
 );
+-- Stock movements: issues to work orders, receipts from POs, cycle-count adjustments.
+CREATE TABLE IF NOT EXISTS inventory_movements (
+  id INTEGER PRIMARY KEY,
+  part_id INTEGER NOT NULL REFERENCES parts(id),
+  qty_change INTEGER NOT NULL,
+  kind TEXT NOT NULL,                               -- Issue | Receipt | Return | Adjustment
+  ref TEXT,                                         -- work order or PO number
+  note TEXT,
+  created_at TEXT NOT NULL,
+  is_historical INTEGER NOT NULL DEFAULT 0
+);
 CREATE UNIQUE INDEX IF NOT EXISTS po_one_open_per_incident ON purchase_orders(incident_id)
   WHERE incident_id IS NOT NULL AND status NOT IN ('Rejected');
 `;
@@ -192,6 +204,13 @@ const MIGRATIONS = [
   ['parts', 'vendor_id', 'INTEGER REFERENCES vendors(id)'],
   ['parts', 'unit_cost', 'REAL'],
   ['parts', 'reorder_qty', 'INTEGER NOT NULL DEFAULT 1'],
+  // Historical rows (the seeded week of plant history) survive "Reset Demo".
+  ['incidents', 'is_historical', 'INTEGER NOT NULL DEFAULT 0'],
+  ['incidents', 'ai_assisted', 'INTEGER NOT NULL DEFAULT 1'],
+  ['work_orders', 'is_historical', 'INTEGER NOT NULL DEFAULT 0'],
+  ['reservations', 'is_historical', 'INTEGER NOT NULL DEFAULT 0'],
+  ['purchase_orders', 'is_historical', 'INTEGER NOT NULL DEFAULT 0'],
+  ['events', 'is_historical', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 function migrate(db) {
@@ -213,7 +232,8 @@ export function openDb(file = process.env.SPARESPARK_DB || './data/sparespark.db
   migrate(db);
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM robots').get();
   if (n === 0) seed(db);
-  else seedProcurement(db); // existing databases get vendors and part costs
+  else seedMissing(db); // existing databases get new reference data, parts, vendors and costs
+  if (process.env.SPARESPARK_HISTORY !== 'off') tx(db, () => seedHistory(db));
 
   return db;
 }

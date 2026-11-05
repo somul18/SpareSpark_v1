@@ -92,7 +92,7 @@ export function createApp({ dbFile, stepMs, repairMs, vendorMs } = {}) {
   // ----- incidents -----
   route('GET', '/api/incidents', ({ query }) => {
     const open = query.get('open') === 'true';
-    const rows = db.prepare(`SELECT i.id FROM incidents i ${open ? 'WHERE i.stage NOT IN (?, ?)' : ''} ORDER BY i.id DESC LIMIT 200`)
+    const rows = db.prepare(`SELECT i.id FROM incidents i ${open ? 'WHERE i.stage NOT IN (?, ?)' : ''} ORDER BY i.created_at DESC, i.id DESC LIMIT 200`)
       .all(...(open ? [STAGES.RESOLVED, STAGES.FAILED] : []));
     return rows.map((r) => serialize(r.id, { compact: true }));
   });
@@ -112,7 +112,9 @@ export function createApp({ dbFile, stepMs, repairMs, vendorMs } = {}) {
   route('GET', '/api/events', ({ query }) => db.prepare('SELECT * FROM events WHERE id > ? ORDER BY id DESC LIMIT 100').all(Number(query.get('since') || 0)));
   route('GET', '/api/work-orders', () => db.prepare(`SELECT w.*, i.number AS incident_number, r.name AS robot, p.part_number, t.name AS technician
       FROM work_orders w JOIN incidents i ON i.id = w.incident_id JOIN robots r ON r.id = w.robot_id JOIN parts p ON p.id = w.part_id
-      LEFT JOIN technicians t ON t.id = w.technician_id ORDER BY w.id DESC`).all());
+      LEFT JOIN technicians t ON t.id = w.technician_id ORDER BY w.created_at DESC, w.id DESC`).all());
+  route('GET', '/api/inventory-movements', () => db.prepare(`SELECT m.*, p.part_number, p.description, p.bin FROM inventory_movements m
+      JOIN parts p ON p.id = m.part_id ORDER BY m.created_at DESC, m.id DESC LIMIT 300`).all());
   route('GET', '/api/webhooks', () => db.prepare('SELECT * FROM webhook_log ORDER BY id DESC LIMIT 50').all());
   route('GET', '/api/metrics', () => metrics(db));
 
@@ -120,7 +122,7 @@ export function createApp({ dbFile, stepMs, repairMs, vendorMs } = {}) {
   route('GET', '/api/vendors', () => db.prepare('SELECT * FROM vendors ORDER BY name').all());
   route('GET', '/api/purchase-orders', ({ query }) => {
     const status = query.get('status');
-    const rows = db.prepare(`SELECT id FROM purchase_orders ${status ? 'WHERE status = ?' : ''} ORDER BY id DESC LIMIT 200`).all(...(status ? [status] : []));
+    const rows = db.prepare(`SELECT id FROM purchase_orders ${status ? 'WHERE status = ?' : ''} ORDER BY created_at DESC, id DESC LIMIT 200`).all(...(status ? [status] : []));
     return rows.map((r) => workflow.getPo(r.id));
   });
   route('POST', '/api/purchase-orders', ({ body, res }) => { res.statusCode = 201; return workflow.createPurchaseOrder({ ...(body || {}), incident_id: null }); });
@@ -236,7 +238,30 @@ export function metrics(db) {
     FROM purchase_orders`);
   const stockouts = q('SELECT COUNT(DISTINCT incident_id) n FROM purchase_orders WHERE incident_id IS NOT NULL').n;
   const procuredFixes = q("SELECT COUNT(*) n FROM incidents i WHERE i.stage = ? AND EXISTS (SELECT 1 FROM purchase_orders po WHERE po.incident_id = i.id AND po.status = 'Received')", STAGES.RESOLVED).n;
+  // AI-assisted vs manual, over all incidents (seeded history plus new activity).
+  const cohort = (ai) => {
+    const c = q(`SELECT COUNT(*) n, SUM(stage = ?) resolved, SUM(first_time_fix = 1) ftf, SUM(first_time_fix IS NOT NULL) repaired,
+        SUM(sla_status = 'Met') met, SUM(sla_status IN ('Met','Breached')) sla_total,
+        AVG(CASE WHEN resolved_at IS NOT NULL THEN (julianday(resolved_at) - julianday(created_at)) * 86400 END) mttr
+      FROM incidents WHERE ai_assisted = ?`, STAGES.RESOLVED, ai ? 1 : 0);
+    return { incidents: c.n || 0, resolved: c.resolved || 0, first_time_fix_rate: c.repaired ? (c.ftf || 0) / c.repaired : null,
+      sla_attainment: c.sla_total ? (c.met || 0) / c.sla_total : null, avg_resolution_seconds: c.mttr ?? null };
+  };
+  const today = new Date();
+  const daily = [];
+  for (let d = 7; d >= 0; d -= 1) {
+    const day = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - d)).toISOString().slice(0, 10);
+    const r = q(`SELECT SUM(ai_assisted = 1) ai, SUM(ai_assisted = 0) manual, SUM(sla_status = 'Breached') breached
+      FROM incidents WHERE substr(created_at, 1, 10) = ?`, day);
+    daily.push({ date: day, ai: r.ai || 0, manual: r.manual || 0, breached: r.breached || 0 });
+  }
+  const hist = q('SELECT SUM(is_historical = 1) h, SUM(is_historical = 0) l FROM incidents');
   return {
+    ai_vs_manual: { ai: cohort(true), manual: cohort(false) },
+    daily,
+    historical_incidents: hist.h || 0,
+    live_incidents: hist.l || 0,
+    downtime_hours: (q("SELECT SUM((julianday(COALESCE(resolved_at, ?)) - julianday(created_at)) * 24) h FROM incidents", new Date().toISOString()).h) || 0,
     procurement: {
       open_purchase_orders: po.open_n || 0,
       awaiting_approval: po.pending || 0,

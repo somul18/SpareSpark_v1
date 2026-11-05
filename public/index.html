@@ -57,6 +57,11 @@
     <!-- Dashboard -->
     <section id="view-dashboard" class="view">
       <div class="kpi-big" id="dashKpis"></div>
+      <p class="data-scope" id="dashScope"></p>
+      <h2 class="section-title">AI-assisted vs manual</h2>
+      <div class="compare" id="dashCompare"></div>
+      <h2 class="section-title">Incidents per day <small>(last 7 days and today)</small></h2>
+      <div class="card chart-card"><div class="legend" id="dailyLegend"></div><div id="dailyChart" class="daily-chart"></div></div>
       <h2 class="section-title">Procurement</h2>
       <div class="kpis" id="dashProcKpis"></div>
     </section>
@@ -64,7 +69,12 @@
     <!-- Work Orders & Incidents -->
     <section id="view-workorders" class="view">
       <div class="kpis" id="woKpis"></div>
-      <h2 class="section-title">Incidents <small>(click a row to open its workflow)</small></h2>
+      <div class="table-head">
+        <h2 class="section-title">Incidents <small>(click a row to open its workflow)</small></h2>
+        <div class="seg" id="incFilter" role="group" aria-label="Filter incidents">
+          <button class="active" data-inc-filter="all">All</button><button data-inc-filter="live">New</button><button data-inc-filter="history">History</button><button data-inc-filter="ai">AI-assisted</button><button data-inc-filter="manual">Manual</button>
+        </div>
+      </div>
       <div class="table-wrap"><table class="grid" id="incidentTable"></table></div>
       <h2 class="section-title">Work orders <small>(created by the Resolution Agent when a technician is dispatched)</small></h2>
       <div class="table-wrap"><table class="grid" id="woTable"></table></div>
@@ -76,6 +86,8 @@
         <div>
           <h2 class="section-title">Spare-parts inventory <small>(structured)</small></h2>
           <div class="table-wrap"><table class="grid" id="partsTable"></table></div>
+          <h2 class="section-title">Stock movements <small>(issues, receipts, returns, cycle counts)</small></h2>
+          <div class="table-wrap scroll-y"><table class="grid" id="movesTable"></table></div>
           <h2 class="section-title">Try a lookup</h2>
           <form id="lookupForm" class="inline-form">
             <input name="part_number" placeholder="Part number, e.g. GR-220-W" required>

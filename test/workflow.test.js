@@ -74,7 +74,7 @@ test('human-in-the-loop flow pauses, resumes after approval, and resolves with G
   await until(() => workflow.get(incident.id).stage === STAGES.APPROVAL);
   await wait(50);
   assert.equal(workflow.get(incident.id).stage, STAGES.APPROVAL, 'must stay paused');
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM reservations').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM reservations WHERE is_historical = 0').get().n, 0);
   workflow.approve(incident.id, { approver: 'S. Patel' });
   assert.throws(() => workflow.approve(incident.id, {}), /not awaiting approval/);
   const done = await until(() => { const i = workflow.get(incident.id); return i.stage === STAGES.RESOLVED && i; });
@@ -104,8 +104,14 @@ test('a robot cannot get a duplicate open incident, and reset restores the seed'
   const { db, workflow } = fresh();
   runScenario(workflow, 'hitl');
   assert.throws(() => runScenario(workflow, 'hitl'), /already has open incident/);
+  const history = db.prepare('SELECT COUNT(*) n FROM incidents WHERE is_historical = 1').get().n;
+  assert.ok(history >= 20, 'a week of history is seeded');
   resetDemo(workflow);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM incidents').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM incidents WHERE is_historical = 0').get().n, 0, 'new demo data is removed');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM incidents WHERE is_historical = 1').get().n, history, 'history survives reset');
+  assert.ok(db.prepare('SELECT COUNT(*) n FROM work_orders WHERE is_historical = 1').get().n > 0);
+  assert.ok(db.prepare('SELECT COUNT(*) n FROM purchase_orders WHERE is_historical = 1').get().n > 0);
+  assert.ok(db.prepare('SELECT COUNT(*) n FROM inventory_movements WHERE is_historical = 1').get().n > 0);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM robots WHERE status = 'Operational'").get().n, 4);
   assert.ok(db.prepare('SELECT COUNT(*) n FROM knowledge').get().n >= 10);
 });
@@ -132,6 +138,8 @@ test('LLM answers that cite unknown sources, parts or percentages are rejected',
 
 test('procurement flow: stockout -> PO approval -> vendor ships -> receive updates inventory -> resolved', async () => {
   const { db, workflow } = createApp({ dbFile: ':memory:', stepMs: 5, repairMs: 10, vendorMs: 10 });
+  const { metrics } = await import('../server/app.js');
+  const base = metrics(db).procurement; // the seeded week of history already has purchase orders
   const { incident } = runScenario(workflow, 'procurement');
   await until(() => workflow.get(incident.id).stage === STAGES.PO_APPROVAL);
   const po = db.prepare('SELECT * FROM purchase_orders WHERE incident_id = ?').get(incident.id);
@@ -153,10 +161,11 @@ test('procurement flow: stockout -> PO approval -> vendor ships -> receive updat
   assert.equal(done.selected_part_number, 'SM-400-J3');
   assert.match(done.latest_action, /procured on PO/);
   assert.match(db.prepare('SELECT install_instructions FROM work_orders WHERE incident_id = ?').get(incident.id).install_instructions, /encoder calibration/);
-  const m = (await import('../server/app.js')).metrics(db);
-  assert.equal(m.procurement.received, 1);
-  assert.equal(m.procurement.spend, 2 * 1850);
-  assert.equal(m.procurement.repairs_unblocked_by_procurement, 1);
+  const m = metrics(db);
+  assert.equal(m.procurement.received, base.received + 1);
+  assert.equal(m.procurement.spend, base.spend + 2 * 1850);
+  assert.equal(m.procurement.repairs_unblocked_by_procurement, base.repairs_unblocked_by_procurement + 1);
+  assert.equal(db.prepare("SELECT qty_change FROM inventory_movements WHERE ref = ? AND kind = 'Receipt'").get(po.number).qty_change, 2);
 });
 
 test('repeated happy flows run out of stock and hand over to procurement instead of failing', async () => {
@@ -178,4 +187,20 @@ test('obsolete part with no stock anywhere orders the documented successor; reje
   assert.equal(po.part_number, 'GR-220-W2');
   workflow.rejectPo(po.id, { comment: 'budget' });
   assert.equal(workflow.get(incident.id).stage, STAGES.FAILED);
+});
+
+test('history: AI-assisted and manual incidents feed the dashboard together with new data', async () => {
+  const { db, workflow } = fresh();
+  const { metrics } = await import('../server/app.js');
+  const m0 = metrics(db);
+  assert.ok(m0.ai_vs_manual.ai.incidents > 0 && m0.ai_vs_manual.manual.incidents > 0);
+  assert.ok(m0.ai_vs_manual.ai.first_time_fix_rate > m0.ai_vs_manual.manual.first_time_fix_rate);
+  assert.equal(m0.daily.length, 8);
+  assert.ok(m0.daily.slice(0, 7).reduce((s, d) => s + d.ai + d.manual, 0) >= 20);
+  const { incident } = runScenario(workflow, 'happy');
+  await until(() => workflow.get(incident.id).stage === STAGES.RESOLVED);
+  const m1 = metrics(db);
+  assert.equal(m1.ai_vs_manual.ai.incidents, m0.ai_vs_manual.ai.incidents + 1);
+  assert.equal(m1.daily[7].ai, m0.daily[7].ai + 1, 'today counts the new incident');
+  assert.equal(workflow.stagePath(db.prepare('SELECT * FROM incidents WHERE ai_assisted = 0 LIMIT 1').get())[1].stage, 'Manual Parts Pick');
 });

@@ -316,6 +316,9 @@ export class Workflow {
         if (success) {
           this.db.prepare('UPDATE parts SET qty_on_hand = qty_on_hand - ?, qty_reserved = qty_reserved - ? WHERE id = ?').run(r.qty, r.qty, r.part_id);
           this.db.prepare("UPDATE reservations SET status = 'Consumed' WHERE id = ?").run(r.id);
+          const woNum = this.db.prepare('SELECT number FROM work_orders WHERE incident_id = ?').get(id)?.number ?? null;
+          this.db.prepare("INSERT INTO inventory_movements(part_id, qty_change, kind, ref, note, created_at) VALUES (?,?,'Issue',?,?,?)")
+            .run(r.part_id, -r.qty, woNum, `Issued for ${inc.number}`, resolvedAt.toISOString());
         }
       }
       this.db.prepare('UPDATE work_orders SET status = ?, repair_confirmation = ?, completed_at = ? WHERE incident_id = ?')
@@ -457,6 +460,8 @@ export class Workflow {
     tx(this.db, () => {
       this.db.prepare("UPDATE purchase_orders SET status = 'Received', received_qty = ?, received_by = ?, received_at = ? WHERE id = ?").run(q, received_by, now(), po.id);
       this.db.prepare('UPDATE parts SET qty_on_hand = qty_on_hand + ? WHERE id = ?').run(q, po.part_id);
+      this.db.prepare("INSERT INTO inventory_movements(part_id, qty_change, kind, ref, note, created_at) VALUES (?,?,'Receipt',?,?,?)")
+        .run(po.part_id, q, po.number, `Received from ${po.vendor_name || 'vendor'}`, now());
     });
     const part = this.db.prepare('SELECT * FROM parts WHERE id = ?').get(po.part_id);
     if (po.incident_id) {
@@ -517,6 +522,11 @@ export class Workflow {
   }
 
   stagePath(inc) {
+    if (inc.ai_assisted === 0) {
+      // Handled manually, before or outside SpareSpark's agents.
+      return [[STAGES.FAULT, 'Shift Supervisor'], ['Manual Parts Pick', 'Maintenance Planner'], [STAGES.REPAIR, 'Maintenance Technician'], [STAGES.RESOLVED, 'Maintenance Planner']]
+        .map(([stage, owner]) => ({ stage, owner, status: 'done' }));
+    }
     const procurement = inc.demo_scenario === 'procurement' || PROCUREMENT_STAGES.has(inc.stage)
       || !!this.db.prepare('SELECT 1 FROM purchase_orders WHERE incident_id = ?').get(inc.id);
     const approval = inc.demo_scenario === 'hitl' || ['Pending', 'Approved', 'Rejected'].includes(inc.approval_status) || inc.stage === STAGES.APPROVAL;

@@ -2,9 +2,16 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pct = (v) => (v === null || v === undefined ? '–' : `${Math.round(v * 100)}%`);
-const time = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
+const time = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+const srcPill = (h) => (h ? '<span class="pill muted" title="Seeded history: kept by Reset Demo">History</span>' : '<span class="pill info" title="Created since the last reset">New</span>');
+const aiPill = (ai) => (ai ? '<span class="pill ai">AI-assisted</span>' : '<span class="pill manual">Manual</span>');
 
-const state = { view: 'console', config: {}, robots: [], incidents: [], metrics: {}, alerts: [], pos: [], selected: null, popup: null, kbFilter: '' };
+const state = { incFilter: 'all', view: 'console', config: {}, robots: [], incidents: [], metrics: {}, alerts: [], pos: [], selected: null, popup: null, kbFilter: '' };
 const money = (n) => `$${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 const dur = (sec) => (sec === null || sec === undefined ? '–' : sec < 90 ? `${Math.round(sec)} s` : sec < 5400 ? `${Math.round(sec / 60)} min` : sec < 172800 ? `${(sec / 3600).toFixed(1)} h` : `${(sec / 86400).toFixed(1)} d`);
 const WAITING_STAGES = new Set(['Awaiting Human Approval', 'Awaiting PO Approval', 'Awaiting Delivery']);
@@ -78,6 +85,57 @@ function renderDashboard() {
     ['Parts recovered by AI', m.parts_recovered_by_ai ?? 0, 'Substitutes found in maintenance knowledge, not inventory'],
   ].map(([l, v, h]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div><div class="hint">${esc(h)}</div></div>`).join(''));
   setHtml($('#dashProcKpis'), procKpiHtml(m.procurement || {}));
+  setHtml($('#dashScope'), `Reporting on all ${(m.historical_incidents || 0) + (m.live_incidents || 0)} incidents: ${m.historical_incidents || 0} from the last 7 days of history and ${m.live_incidents || 0} new since the last reset.`);
+  const a = m.ai_vs_manual?.ai || {}, h = m.ai_vs_manual?.manual || {};
+  // Each row: raw values decide which side is better; fmt turns them into text.
+  const row = (label, av, hv, fmt, better) => {
+    const ok = av != null && hv != null && av !== hv;
+    const aiWins = ok && (better === 'high' ? av > hv : better === 'low' ? av < hv : false);
+    const manWins = ok && better && !aiWins;
+    return `<tr><th>${label}</th><td class="${aiWins ? 'win' : ''}">${av == null ? '–' : fmt(av)}</td><td class="${manWins ? 'win' : ''}">${hv == null ? '–' : fmt(hv)}</td></tr>`;
+  };
+  const id = (v) => v;
+  setHtml($('#dashCompare'), `<div class="card"><table class="cmp">
+      <tr><th></th><th><span class="swatch ai"></span>AI-assisted</th><th><span class="swatch manual"></span>Manual</th></tr>
+      ${row('Incidents', a.incidents, h.incidents, id)}
+      ${row('First-time fix rate', a.first_time_fix_rate, h.first_time_fix_rate, pct, 'high')}
+      ${row('SLA attainment', a.sla_attainment, h.sla_attainment, pct, 'high')}
+      ${row('Avg time to resolve', a.avg_resolution_seconds, h.avg_resolution_seconds, dur, 'low')}
+    </table></div>
+    <div class="card cmp-note"><b>Why the gap.</b> Manual repairs rely on the planner picking a part from memory. In the past week that sent the wrong part three times
+      (a legacy servo, a wrist reducer that does not fit, a short paint hose) and skipped one calibration step, each costing a second visit. SpareSpark checks
+      inventory, finds documented substitutes, and attaches the installation notes to the work order.</div>`);
+  renderDailyChart(m.daily || []);
+}
+
+// Stacked bars per day: AI-assisted (bottom) and manual (top). Hover shows the numbers.
+function renderDailyChart(days) {
+  setHtml($('#dailyLegend'), '<span><span class="swatch ai"></span>AI-assisted</span><span><span class="swatch manual"></span>Manual</span>');
+  const max = Math.max(1, ...days.map((d) => d.ai + d.manual));
+  const ticks = max <= 4 ? [0, 2, 4] : [0, Math.ceil(max / 2), Math.ceil(max / 2) * 2];
+  const top = ticks[ticks.length - 1];
+  const W = 1000, H = 230, L = 30, B = 26, T = 22, bw = 48, gap = (W - L - days.length * bw) / days.length;
+  const y = (v) => T + (H - T - B) * (1 - v / top);
+  const today = new Date().toISOString().slice(0, 10);
+  const label = (iso) => (iso === today ? 'Today' : new Date(`${iso}T12:00:00Z`).toLocaleDateString([], { weekday: 'short', day: 'numeric' }));
+  const grid = ticks.map((t) => `<line x1="${L}" x2="${W}" y1="${y(t)}" y2="${y(t)}" class="grid-line"/><text x="${L - 6}" y="${y(t) + 4}" class="axis" text-anchor="end">${t}</text>`).join('');
+  const bars = days.map((d, i) => {
+    const x = L + gap / 2 + i * (bw + gap);
+    const segs = [];
+    const yAi = y(d.ai), yAll = y(d.ai + d.manual);
+    if (d.ai) segs.push(`<path class="bar ai" d="${barPath(x, yAi, bw, y(0) - yAi, !d.manual)}"/>`);
+    if (d.manual) segs.push(`<path class="bar manual" d="${barPath(x, yAll, bw, yAi - yAll - (d.ai ? 2 : 0), true)}"/>`);
+    const tip = `${label(d.date)}: ${d.ai} AI-assisted, ${d.manual} manual${d.breached ? `, ${d.breached} SLA breached` : ''}`;
+    return `<g class="day" tabindex="0"><title>${esc(tip)}</title><rect x="${x - gap / 2}" y="${T}" width="${bw + gap}" height="${H - T - B}" class="hit"/>${segs.join('')}
+      ${d.ai + d.manual ? `<text x="${x + bw / 2}" y="${yAll - 5}" class="val" text-anchor="middle">${d.ai + d.manual}</text>` : ''}
+      <text x="${x + bw / 2}" y="${H - 8}" class="axis" text-anchor="middle">${esc(label(d.date))}</text></g>`;
+  }).join('');
+  setHtml($('#dailyChart'), `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Incidents per day, AI-assisted and manual">${grid}${bars}</svg>`);
+}
+function barPath(x, yTop, w, h, roundTop) {
+  if (h <= 0) return '';
+  const r = roundTop ? Math.min(4, h) : 0;
+  return `M${x},${yTop + h} V${yTop + r} Q${x},${yTop} ${x + r},${yTop} H${x + w - r} Q${x + w},${yTop} ${x + w},${yTop + r} V${yTop + h} Z`;
 }
 
 function procKpiHtml(p) {
@@ -116,12 +174,12 @@ function renderProcurement() {
         ${po.status === 'Shipped' ? ' Goods are on the way: receive them when they arrive at the dock.' : po.status === 'Ordered' ? ' Waiting for the vendor to ship.' : ''}</div>
       <div class="po-actions">${poActions(po)}</div></div>`).join('')
     : '<div class="empty">Nothing to approve or receive.</div>');
-  setHtml($('#poTable'), '<tr><th>PO</th><th>Status</th><th>Part</th><th class="num">Qty</th><th>Vendor</th><th class="num">Total</th><th>Incident</th><th>Created</th><th>Expected</th><th>Received</th><th></th></tr>' +
+  setHtml($('#poTable'), '<tr><th>PO</th><th>Status</th><th>Part</th><th class="num">Qty</th><th>Vendor</th><th class="num">Total</th><th>Incident</th><th>Created</th><th>Expected</th><th>Received</th><th>Source</th><th></th></tr>' +
     (state.pos.length ? state.pos.map((po) => `<tr><td><b>${esc(po.number)}</b></td><td><span class="pill ${PO_TONE[po.status]}">${esc(po.status)}</span></td>
       <td>${esc(po.part_number)}</td><td class="num">${po.received_qty ?? po.qty}</td><td>${esc(po.vendor_name || '')}</td><td class="num">${money(po.total)}</td>
       <td>${esc(po.incident_number || '–')}</td><td>${time(po.created_at)}</td><td>${esc(po.expected_at?.slice(0, 10) || '')}</td>
-      <td>${po.received_at ? `${time(po.received_at)} <small>${esc(po.received_by || '')}</small>` : ''}</td><td style="white-space:nowrap">${po.status === 'Pending Approval' ? poActions(po) : ''}</td></tr>`).join('')
-      : '<tr><td colspan="11"><small>No purchase orders yet. Run the procurement flow, or run the happy flow until SM-400-J3 runs out.</small></td></tr>'));
+      <td>${po.received_at ? `${time(po.received_at)} <small>${esc(po.received_by || '')}</small>` : ''}</td><td>${srcPill(po.is_historical)}</td><td style="white-space:nowrap">${po.status === 'Pending Approval' ? poActions(po) : ''}</td></tr>`).join('')
+      : '<tr><td colspan="12"><small>No purchase orders yet. Run the procurement flow, or run the happy flow until SM-400-J3 runs out.</small></td></tr>'));
 }
 
 async function renderWorkOrders() {
@@ -133,16 +191,19 @@ async function renderWorkOrders() {
     ['Open incidents', m.open_incidents ?? '–'], ['Waiting on human', m.pending_approvals ?? 0], ['Resolved incidents', m.resolved_incidents ?? 0],
     ['Active work orders', activeWo], ['Completed work orders', wos.filter((w) => w.status === 'Completed').length], ['Total work orders', wos.length],
   ].map(([l, v]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div></div>`).join(''));
-  setHtml($('#incidentTable'), `<tr><th>Incident</th><th>Robot</th><th>Fault</th><th>Failed part</th><th>Stage</th><th>Selected part</th><th>Match</th><th>FTF</th><th>SLA</th><th>Work order</th><th>Opened</th></tr>` +
-    (state.incidents.length ? state.incidents.map((i) => `<tr class="click" data-incident="${i.id}">
+  const F = { all: () => true, live: (i) => !i.is_historical, history: (i) => i.is_historical, ai: (i) => i.ai_assisted, manual: (i) => !i.ai_assisted };
+  const incs = state.incidents.filter(F[state.incFilter] || F.all);
+  document.querySelectorAll('[data-inc-filter]').forEach((b) => b.classList.toggle('active', b.dataset.incFilter === state.incFilter));
+  setHtml($('#incidentTable'), `<tr><th>Incident</th><th>Robot</th><th>Fault</th><th>Failed part</th><th>Stage</th><th>Selected part</th><th>Match</th><th>Handled</th><th>FTF</th><th>SLA</th><th>Work order</th><th>Opened</th><th>Source</th></tr>` +
+    (incs.length ? incs.map((i) => `<tr class="click" data-incident="${i.id}">
       <td>${esc(i.number)}${i.external_number ? `<br><small>${esc(i.external_number)}</small>` : ''}</td><td>${esc(i.robot.name)}</td><td>${esc(i.fault_code)}</td>
-      <td>${esc(i.failed_part_number || '')}</td><td>${stagePill(i.stage)}</td><td>${esc(i.selected_part_number || '')}</td><td>${matchPill(i.match_type)}</td>
-      <td>${i.first_time_fix === null ? '' : i.first_time_fix ? 'Yes' : 'No'}</td><td>${esc(i.sla_status || '')}</td><td>${esc(woByIncident[i.id]?.number || '')}${woByIncident[i.id] ? `<br><small>${esc(woByIncident[i.id].status)}</small>` : ''}</td><td>${time(i.created_at)}</td></tr>`).join('')
-      : '<tr><td colspan="11"><small>No incidents yet. Run a demo flow from the Assets Console.</small></td></tr>'));;
-  setHtml($('#woTable'), '<tr><th>Work order</th><th>Incident</th><th>Robot</th><th>Technician</th><th>Part</th><th>Bin</th><th>Location</th><th>Status</th><th>Created</th><th>Instructions</th></tr>' +
+      <td>${esc(i.failed_part_number || '')}</td><td>${stagePill(i.stage)}</td><td>${esc(i.selected_part_number || '')}</td><td>${matchPill(i.match_type)}</td><td>${aiPill(i.ai_assisted)}</td>
+      <td>${i.first_time_fix === null ? '' : i.first_time_fix ? 'Yes' : 'No'}</td><td>${esc(i.sla_status || '')}</td><td>${esc(woByIncident[i.id]?.number || '')}${woByIncident[i.id] ? `<br><small>${esc(woByIncident[i.id].status)}</small>` : ''}</td><td>${time(i.created_at)}</td><td>${srcPill(i.is_historical)}</td></tr>`).join('')
+      : '<tr><td colspan="13"><small>No incidents match this filter.</small></td></tr>'));;
+  setHtml($('#woTable'), '<tr><th>Work order</th><th>Incident</th><th>Robot</th><th>Technician</th><th>Part</th><th>Bin</th><th>Location</th><th>Status</th><th>Created</th><th>Source</th><th>Instructions</th></tr>' +
     (wos.length ? wos.map((w) => `<tr class="click" data-incident="${w.incident_id}"><td><b>${esc(w.number)}</b></td><td>${esc(w.incident_number)}</td><td>${esc(w.robot)}</td><td>${esc(w.technician)}</td><td><b>${esc(w.part_number)}</b></td>
-      <td>${esc(w.bin)}</td><td>${esc(w.location)}</td><td><span class="pill ${w.status === 'Completed' ? 'ok' : w.status === 'Cancelled' ? 'bad' : 'info'}">${esc(w.status)}</span></td><td>${time(w.created_at)}</td><td><small>${esc(w.install_instructions).replace(/\n/g, '<br>')}</small></td></tr>`).join('')
-      : '<tr><td colspan="10"><small>No work orders yet. One is created when a technician is dispatched.</small></td></tr>'));
+      <td>${esc(w.bin)}</td><td>${esc(w.location)}</td><td><span class="pill ${w.status === 'Completed' ? 'ok' : w.status === 'Cancelled' ? 'bad' : 'info'}">${esc(w.status)}</span></td><td>${time(w.created_at)}</td><td>${srcPill(w.is_historical)}</td><td><small>${esc(w.install_instructions).replace(/\n/g, '<br>')}</small></td></tr>`).join('')
+      : '<tr><td colspan="11"><small>No work orders yet. One is created when a technician is dispatched.</small></td></tr>'));
 }
 
 // ---------- coordinator ----------
@@ -152,8 +213,8 @@ function renderCoordinatorLists() {
   setHtml($('#alerts'), state.alerts.length ? state.alerts.map((a) => `<div class="alert-item ${state.selected === a.id ? 'selected' : ''}" data-select="${a.id}">
       <div class="t">⚠ ${esc(a.number)} · ${esc(a.robot)}</div><div class="s">No exact match for ${esc(a.failed_part_number)}. Agent suggests ${esc(a.selected_part_number || 'a substitute')}.</div></div>`).join('')
     : '<div class="s"><small>No open alerts.</small></div>');
-  setHtml($('#coordIncidents'), state.incidents.slice(0, 15).map((i) => `<div class="inc-item ${state.selected === i.id ? 'selected' : ''}" data-select="${i.id}">
-      <div class="t">${esc(i.number)} · ${esc(i.robot.name)}</div><div class="s">${esc(i.stage)}</div></div>`).join('') || '<small>None yet.</small>');
+  setHtml($('#coordIncidents'), state.incidents.filter((i) => !i.is_historical).slice(0, 15).map((i) => `<div class="inc-item ${state.selected === i.id ? 'selected' : ''}" data-select="${i.id}">
+      <div class="t">${esc(i.number)} · ${esc(i.robot.name)}</div><div class="s">${esc(i.stage)}</div></div>`).join('') || '<small>No new incidents since the last reset. History is on the Work Orders &amp; Incidents tab.</small>');
 }
 
 async function renderCoordinatorMain() {
@@ -224,7 +285,11 @@ async function onChat(e) {
 
 // ---------- knowledge ----------
 async function renderKnowledge() {
-  const [parts, kb] = await Promise.all([api('/parts'), api('/knowledge')]);
+  const [parts, kb, moves] = await Promise.all([api('/parts'), api('/knowledge'), api('/inventory-movements')]);
+  setHtml($('#movesTable'), '<tr><th>When</th><th>Part</th><th>Type</th><th class="num">Qty</th><th>Reference</th><th>Note</th><th>Source</th></tr>' +
+    (moves.length ? moves.map((m) => `<tr><td>${time(m.created_at)}</td><td><b>${esc(m.part_number)}</b></td><td>${esc(m.kind)}</td>
+      <td class="num ${m.qty_change < 0 ? 'neg' : 'pos'}">${m.qty_change > 0 ? '+' : ''}${m.qty_change}</td><td>${esc(m.ref || '')}</td><td><small>${esc(m.note || '')}</small></td><td>${srcPill(m.is_historical)}</td></tr>`).join('')
+      : '<tr><td colspan="7"><small>No stock movements yet.</small></td></tr>'));
   setHtml($('#partsTable'), '<tr><th>Part</th><th>Description</th><th>Models</th><th class="num">On hand</th><th class="num">Reserved</th><th class="num">On order</th><th>Bin</th><th>Status</th><th>Vendor</th></tr>' +
     parts.map((p) => `<tr><td><b>${esc(p.part_number)}</b></td><td>${esc(p.description)}</td><td>${esc(p.compatible_models)}</td><td class="num">${p.qty_on_hand}</td><td class="num">${p.qty_reserved}</td>
       <td class="num">${p.on_order || ''}</td><td>${esc(p.bin)}</td><td><span class="pill ${p.status === 'Active' ? 'ok' : p.status === 'Obsolete' ? 'bad' : 'warn'}">${esc(p.status)}</span></td><td><small>${esc(p.vendor_name || '–')}${p.unit_cost ? ` · ${money(p.unit_cost)}` : ''}</small></td></tr>`).join(''));
@@ -276,7 +341,7 @@ async function renderPopup() {
   const lastStageMsg = {};
   for (const e of inc.events) if (e.kind === 'stage') lastStageMsg[e.message.split(':')[0]] = e.message.slice(e.message.indexOf(':') + 1).trim();
   setHtml($('#wfTitle'), `Workflow: ${esc(inc.robot.name)} · ${esc(inc.number)}`);
-  setHtml($('#wfSub'), `${{ hitl: 'Human-in-the-loop flow', happy: 'Happy flow', procurement: 'Procurement flow' }[inc.demo_scenario] || 'Live incident'} · fault ${esc(inc.fault_code)}`);
+  setHtml($('#wfSub'), `${{ hitl: 'Human-in-the-loop flow', happy: 'Happy flow', procurement: 'Procurement flow' }[inc.demo_scenario] || (inc.is_historical ? `History (${inc.ai_assisted ? 'AI-assisted' : 'handled manually'})` : 'Live incident')} · fault ${esc(inc.fault_code)}`);
   const failed = inc.stage.startsWith('Failed');
   setHtml($('#wfSteps'), inc.progress.map((s, i) => {
     let status = s.status;
@@ -286,7 +351,7 @@ async function renderPopup() {
     return `<li class="step ${status}"><span class="dot">${mark}</span><div><div class="lbl">${esc(STEP_LABEL[s.stage] || s.stage)}</div>${det ? `<div class="det">${esc(det)}</div>` : ''}</div><span class="owner">${esc(s.owner)}</span></li>`;
   }).join('') + (failed ? `<li class="step failed"><span class="dot">!</span><div><div class="lbl">Needs attention</div><div class="det">${esc(inc.latest_action)}</div></div><span class="owner">${esc(inc.stage_owner)}</span></li>` : ''));
   const resolved = inc.stage === 'Resolved';
-  setHtml($('#wfFoot'), `<div class="summary">${resolved ? `<span class="pill ok">First-time fix: ${inc.first_time_fix ? 'YES' : 'NO'}</span><span class="pill ${inc.sla_status === 'Met' ? 'ok' : 'bad'}">SLA: ${esc(inc.sla_status?.toUpperCase())}</span><span class="pill info">${esc(inc.selected_part_number)}</span>` : ''}</div>
+  setHtml($('#wfFoot'), `<div class="summary">${resolved ? `<span class="pill ${inc.first_time_fix ? 'ok' : 'bad'}">First-time fix: ${inc.first_time_fix ? 'YES' : 'NO'}</span><span class="pill ${inc.sla_status === 'Met' ? 'ok' : 'bad'}">SLA: ${esc(inc.sla_status?.toUpperCase())}</span><span class="pill info">${esc(inc.selected_part_number)}</span>` : ''}</div>
     ${inc.stage === 'Awaiting Human Approval' ? '<button class="btn accent" data-goto-coord>Open coordinator view</button>' : ''}
     ${['Awaiting PO Approval', 'Awaiting Delivery'].includes(inc.stage) && inc.purchase_order ? `<span class="pill warn">${esc(inc.purchase_order.number)}: ${esc(inc.purchase_order.status)}</span>${poActions(inc.purchase_order)}<button class="btn" data-view-po>Open procurement</button>` : ''}
     <button class="btn" id="wfClose2">Close</button>`);
@@ -330,9 +395,10 @@ async function runDemo(name) {
 }
 
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-view],[data-incident],[data-select],[data-approve],[data-reject],[data-goto-coord],[data-confirm-repair],[data-po-approve],[data-po-reject],[data-po-ship],[data-po-receive],[data-view-po],#wfClose,#wfClose2');
+  const t = e.target.closest('[data-inc-filter],[data-view],[data-incident],[data-select],[data-approve],[data-reject],[data-goto-coord],[data-confirm-repair],[data-po-approve],[data-po-reject],[data-po-ship],[data-po-receive],[data-view-po],#wfClose,#wfClose2');
   if (!t) return;
   if (t.dataset.view) return showView(t.dataset.view);
+  if (t.dataset.incFilter) { state.incFilter = t.dataset.incFilter; return refresh(); }
   if (t.id === 'wfClose' || t.id === 'wfClose2') return closePopup();
   if (t.hasAttribute('data-goto-coord')) { const id = state.popup; closePopup(); return selectIncident(id); }
   if (t.hasAttribute('data-view-po')) { closePopup(); return showView('procurement'); }
