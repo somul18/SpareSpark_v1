@@ -30,6 +30,14 @@ cd "$(dirname "$0")/../.."
 echo "==> Enabling Cloud Run, Cloud Build and Artifact Registry in ${PROJECT}"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project "${PROJECT}"
 
+# Newer projects don't give the default compute service account (which Cloud
+# Build uses for source deploys) access to the source bucket. Grant it the
+# Cloud Run Builder role so "gcloud run deploy --source" can build.
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format='value(projectNumber)')"
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/run.builder" --condition=None --quiet >/dev/null
+
 ENV_VARS="SPARESPARK_DB=/data/sparespark.db,SPARESPARK_DEMO=on"
 if [[ "${PUBLIC:-0}" != "1" ]]; then
   SPARESPARK_API_KEY="${SPARESPARK_API_KEY:-$(openssl rand -hex 16)}"
