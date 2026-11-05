@@ -11,7 +11,7 @@ const time = (iso) => {
 const srcPill = (h) => (h ? '<span class="pill muted" title="Seeded history: kept by Reset Demo">History</span>' : '<span class="pill info" title="Created since the last reset">New</span>');
 const aiPill = (ai) => (ai ? '<span class="pill ai">AI-assisted</span>' : '<span class="pill manual">Manual</span>');
 
-const state = { incFilter: 'all', view: 'console', config: {}, robots: [], incidents: [], metrics: {}, alerts: [], pos: [], selected: null, popup: null, kbFilter: '' };
+const state = { dashDay: null, dayScope: 'to_date', timeline: null, incFilter: 'all', view: 'console', config: {}, robots: [], incidents: [], metrics: {}, alerts: [], pos: [], selected: null, popup: null, kbFilter: '' };
 const money = (n) => `$${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 const dur = (sec) => (sec === null || sec === undefined ? '–' : sec < 90 ? `${Math.round(sec)} s` : sec < 5400 ? `${Math.round(sec / 60)} min` : sec < 172800 ? `${(sec / 3600).toFixed(1)} h` : `${(sec / 86400).toFixed(1)} d`);
 const WAITING_STAGES = new Set(['Awaiting Human Approval', 'Awaiting PO Approval', 'Awaiting Delivery']);
@@ -76,17 +76,53 @@ function renderConsole() {
   }).join(''));
 }
 
+// ---------- dashboard ----------
+// The day slider picks a day; widgets show either the week up to the end of that day or that day alone.
+const dayName = (iso, today) => (today ? 'Today' : new Date(`${iso}T12:00:00Z`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' }));
+const dayShort = (iso, today) => (today ? 'Today' : new Date(`${iso}T12:00:00Z`).toLocaleDateString([], { weekday: 'short', day: 'numeric', timeZone: 'UTC' }));
+const DISCOVERY = [
+  ['Exact match in inventory', 'ai'], ['Documented Supersession', 'ai'], ['Potential Alternative', 'ai'], ['Procured after stockout', 'ai'], ['Manual pick by planner', 'manual'],
+];
+
 function renderDashboard() {
   const m = state.metrics;
-  setHtml($('#dashKpis'), [
-    ['Open robot incidents', m.open_incidents ?? '–', `${m.pending_approvals || 0} waiting on a human`],
-    ['First-time fix rate', pct(m.first_time_fix_rate), `${m.resolved_incidents || 0} resolved incidents`],
-    ['SLA attainment', pct(m.sla_attainment), 'Resolved within SLA'],
-    ['Parts recovered by AI', m.parts_recovered_by_ai ?? 0, 'Substitutes found in maintenance knowledge, not inventory'],
-  ].map(([l, v, h]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div><div class="hint">${esc(h)}</div></div>`).join(''));
   setHtml($('#dashProcKpis'), procKpiHtml(m.procurement || {}));
-  setHtml($('#dashScope'), `Reporting on all ${(m.historical_incidents || 0) + (m.live_incidents || 0)} incidents: ${m.historical_incidents || 0} from the last 7 days of history and ${m.live_incidents || 0} new since the last reset.`);
-  const a = m.ai_vs_manual?.ai || {}, h = m.ai_vs_manual?.manual || {};
+  const t = state.timeline;
+  if (!t?.days?.length) return;
+  const days = t.days;
+  const slider = $('#daySlider');
+  slider.max = String(days.length - 1);
+  if (state.dashDay === null || state.dashDay > days.length - 1) state.dashDay = days.length - 1;
+  if (document.activeElement !== slider) slider.value = String(state.dashDay);
+  const sel = days[state.dashDay];
+  const scope = state.dayScope;
+  const k = sel[scope];
+  setHtml($('#dayLabel'), `${dayName(sel.date, sel.today)}${sel.today ? ' (so far)' : ''}`);
+  const n = days.length - 1;
+  setHtml($('#dayTicks'), days.map((d, i) => `<span class="${i === state.dashDay ? 'on' : ''}" style="left:${(i / n) * 100}%;transform:translateX(-${(i / n) * 100}%)">${esc(dayShort(d.date, d.today))}</span>`).join(''));
+  document.querySelectorAll('[data-day-scope]').forEach((b) => b.classList.toggle('active', b.dataset.dayScope === scope));
+  const first = dayShort(days[0].date, false);
+  const range = scope === 'to_date' ? `${first} to ${dayShort(sel.date, sel.today)}` : dayName(sel.date, sel.today);
+  const other = scope === 'to_date' ? sel.day : sel.to_date;
+  const otherLbl = scope === 'to_date' ? 'that day' : 'week to date';
+  const hrs = (v) => (v == null ? '–' : `${v < 10 ? v.toFixed(1) : Math.round(v)} h`);
+  setHtml($('#dashKpis'), [
+    ['Robot availability', pct(k.robot_availability), `${pct(other.robot_availability)} ${otherLbl}`],
+    ['Open incidents', sel.open_incidents, `at end of day · ${sel.incidents.total} new that day`],
+    ['First-time fix rate', pct(k.first_time_fix_rate), `${pct(other.first_time_fix_rate)} ${otherLbl}`],
+    ['SLA attainment', pct(k.sla_attainment), `${pct(other.sla_attainment)} ${otherLbl}`],
+    ['AI-recovered parts', k.ai_recovered_parts, `${other.ai_recovered_parts} ${otherLbl} · substitutes from maintenance knowledge`],
+    ['Downtime hours', hrs(k.downtime_hours), `${hrs(other.downtime_hours)} ${otherLbl} · across ${t.robots} robots`],
+  ].map(([l, v, h]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div><div class="hint">${esc(h)}</div></div>`).join(''));
+  setHtml($('#dashScope'), `Showing ${range}. History and new incidents from the demo flows are counted together (${m.historical_incidents || 0} from history, ${m.live_incidents || 0} new since the last reset).`);
+  renderLineChart(days, state.dashDay);
+  renderDiscovery(k.part_discovery || {}, range);
+  renderCompare(k.ai_vs_manual || {}, range);
+}
+
+function renderCompare(c, range) {
+  const a = c.ai || {}, h = c.manual || {};
+  setHtml($('#cmpScope'), `(${esc(range)})`);
   // Each row: raw values decide which side is better; fmt turns them into text.
   const row = (label, av, hv, fmt, better) => {
     const ok = av != null && hv != null && av !== hv;
@@ -94,10 +130,9 @@ function renderDashboard() {
     const manWins = ok && better && !aiWins;
     return `<tr><th>${label}</th><td class="${aiWins ? 'win' : ''}">${av == null ? '–' : fmt(av)}</td><td class="${manWins ? 'win' : ''}">${hv == null ? '–' : fmt(hv)}</td></tr>`;
   };
-  const id = (v) => v;
   setHtml($('#dashCompare'), `<div class="card"><table class="cmp">
       <tr><th></th><th><span class="swatch ai"></span>AI-assisted</th><th><span class="swatch manual"></span>Manual</th></tr>
-      ${row('Incidents', a.incidents, h.incidents, id)}
+      ${row('Incidents', a.incidents, h.incidents, (v) => v)}
       ${row('First-time fix rate', a.first_time_fix_rate, h.first_time_fix_rate, pct, 'high')}
       ${row('SLA attainment', a.sla_attainment, h.sla_attainment, pct, 'high')}
       ${row('Avg time to resolve', a.avg_resolution_seconds, h.avg_resolution_seconds, dur, 'low')}
@@ -105,38 +140,58 @@ function renderDashboard() {
     <div class="card cmp-note"><b>Why the gap.</b> Manual repairs rely on the planner picking a part from memory. In the past week that sent the wrong part three times
       (a legacy servo, a wrist reducer that does not fit, a short paint hose) and skipped one calibration step, each costing a second visit. SpareSpark checks
       inventory, finds documented substitutes, and attaches the installation notes to the work order.</div>`);
-  renderDailyChart(m.daily || []);
 }
 
-// Stacked bars per day: AI-assisted (bottom) and manual (top). Hover shows the numbers.
-function renderDailyChart(days) {
-  setHtml($('#dailyLegend'), '<span><span class="swatch ai"></span>AI-assisted</span><span><span class="swatch manual"></span>Manual</span>');
-  const max = Math.max(1, ...days.map((d) => d.ai + d.manual));
-  const ticks = max <= 4 ? [0, 2, 4] : [0, Math.ceil(max / 2), Math.ceil(max / 2) * 2];
-  const top = ticks[ticks.length - 1];
-  const W = 1000, H = 230, L = 30, B = 26, T = 22, bw = 48, gap = (W - L - days.length * bw) / days.length;
+// Line chart: incidents reported per day, AI-assisted and manual. The selected day is marked;
+// later days are dimmed. Hover a day for its numbers.
+function renderLineChart(days, selIdx) {
+  setHtml($('#lineLegend'), '<span><span class="swatch ai"></span>AI-assisted</span><span><span class="swatch manual"></span>Manual</span>');
+  const max = Math.max(2, ...days.map((d) => Math.max(d.incidents.ai, d.incidents.manual)));
+  const step = max <= 4 ? 1 : Math.ceil(max / 4);
+  const top = Math.ceil(max / step) * step;
+  const ticks = []; for (let v = 0; v <= top; v += step) ticks.push(v);
+  const W = 560, H = 240, L = 30, R = 84, T = 14, B = 28;
+  const x = (i) => L + ((W - L - R) * i) / Math.max(1, days.length - 1);
   const y = (v) => T + (H - T - B) * (1 - v / top);
-  const today = new Date().toISOString().slice(0, 10);
-  const label = (iso) => (iso === today ? 'Today' : new Date(`${iso}T12:00:00Z`).toLocaleDateString([], { weekday: 'short', day: 'numeric' }));
-  const grid = ticks.map((t) => `<line x1="${L}" x2="${W}" y1="${y(t)}" y2="${y(t)}" class="grid-line"/><text x="${L - 6}" y="${y(t) + 4}" class="axis" text-anchor="end">${t}</text>`).join('');
-  const bars = days.map((d, i) => {
-    const x = L + gap / 2 + i * (bw + gap);
-    const segs = [];
-    const yAi = y(d.ai), yAll = y(d.ai + d.manual);
-    if (d.ai) segs.push(`<path class="bar ai" d="${barPath(x, yAi, bw, y(0) - yAi, !d.manual)}"/>`);
-    if (d.manual) segs.push(`<path class="bar manual" d="${barPath(x, yAll, bw, yAi - yAll - (d.ai ? 2 : 0), true)}"/>`);
-    const tip = `${label(d.date)}: ${d.ai} AI-assisted, ${d.manual} manual${d.breached ? `, ${d.breached} SLA breached` : ''}`;
-    return `<g class="day" tabindex="0"><title>${esc(tip)}</title><rect x="${x - gap / 2}" y="${T}" width="${bw + gap}" height="${H - T - B}" class="hit"/>${segs.join('')}
-      ${d.ai + d.manual ? `<text x="${x + bw / 2}" y="${yAll - 5}" class="val" text-anchor="middle">${d.ai + d.manual}</text>` : ''}
-      <text x="${x + bw / 2}" y="${H - 8}" class="axis" text-anchor="middle">${esc(label(d.date))}</text></g>`;
+  const grid = ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="grid-line"/><text x="${L - 8}" y="${y(v) + 4}" class="axis" text-anchor="end">${v}</text>`).join('');
+  const series = (key) => {
+    const pts = days.map((d, i) => [x(i), y(d.incidents[key])]);
+    const solid = pts.slice(0, selIdx + 1), dim = pts.slice(selIdx);
+    const path = (p) => (p.length > 1 ? `M${p.map((q) => q.join(',')).join(' L')}` : '');
+    const dots = pts.map(([px, py], i) => `<circle cx="${px}" cy="${py}" r="${i === selIdx ? 5 : 4}" class="dot ${key} ${i > selIdx ? 'dim' : ''}"/>`).join('');
+    const last = pts[pts.length - 1];
+    return `<path d="${path(dim)}" class="line ${key} dim"/><path d="${path(solid)}" class="line ${key}"/>${dots}
+      <text x="${last[0] + 10}" y="${last[1] + 4}" class="direct">${key === 'ai' ? 'AI-assisted' : 'Manual'}</text>`;
+  };
+  // Keep the two end labels apart when the lines finish close together.
+  const marker = `<line x1="${x(selIdx)}" x2="${x(selIdx)}" y1="${T}" y2="${H - B}" class="marker"/>`;
+  const labels = days.map((d, i) => `<text x="${x(i)}" y="${H - 8}" class="axis ${i === selIdx ? 'on' : ''}" text-anchor="middle">${esc(dayShort(d.date, d.today))}</text>`).join('');
+  const hits = days.map((d, i) => {
+    const w = (W - L - R) / Math.max(1, days.length - 1);
+    return `<g class="hitday" data-day="${i}" tabindex="0"><title>${esc(`${dayName(d.date, d.today)}: ${d.incidents.ai} AI-assisted, ${d.incidents.manual} manual (${d.incidents.total} total)`)}</title>
+      <rect x="${x(i) - w / 2}" y="${T}" width="${w}" height="${H - T - B}" class="hit"/></g>`;
   }).join('');
-  setHtml($('#dailyChart'), `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Incidents per day, AI-assisted and manual">${grid}${bars}</svg>`);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Maintenance incidents per day, AI-assisted and manual">${grid}${marker}${series('manual')}${series('ai')}${labels}${hits}</svg>`;
+  const endAi = y(days[days.length - 1].incidents.ai), endMan = y(days[days.length - 1].incidents.manual);
+  if (Math.abs(endAi - endMan) < 12) svg = svg.replace(/(<text x="[^"]+" y=")([^"]+)(" class="direct">Manual)/, (m0, a1, a2, a3) => `${a1}${Number(a2) - 12}${a3}`);
+  setHtml($('#lineChart'), svg);
 }
-function barPath(x, yTop, w, h, roundTop) {
-  if (h <= 0) return '';
-  const r = roundTop ? Math.min(4, h) : 0;
-  return `M${x},${yTop + h} V${yTop + r} Q${x},${yTop} ${x + r},${yTop} H${x + w - r} Q${x + w},${yTop} ${x + w},${yTop + r} V${yTop + h} Z`;
+
+// Horizontal bars: how the replacement part was found for each resolved incident in range.
+function renderDiscovery(methods, range) {
+  setHtml($('#discScope'), `(${esc(range)})`);
+  setHtml($('#discLegend'), '<span><span class="swatch ai"></span>Found by SpareSpark (AI-assisted)</span><span><span class="swatch manual"></span>Manual</span>');
+  const total = Object.values(methods).reduce((a, b) => a + b, 0);
+  const max = Math.max(1, ...Object.values(methods));
+  setHtml($('#discChart'), total ? DISCOVERY.map(([name, kind]) => {
+    const n = methods[name] || 0;
+    return `<div class="disc-row" title="${esc(`${name}: ${n} of ${total} repairs`)}"><div class="disc-name">${esc(name)}</div>
+      <div class="disc-track"><div class="disc-bar ${kind}" style="width:${n ? Math.max(2, (n / max) * 100) : 0}%"></div></div>
+      <div class="disc-val">${n} <small>${Math.round((n / total) * 100)}%</small></div></div>`;
+  }).join('') + `<div class="disc-foot">${total} ${total === 1 ? 'repair' : 'repairs'} resolved in range. SpareSpark found the part for ${total - (methods['Manual pick by planner'] || 0)}, including ${(methods['Documented Supersession'] || 0) + (methods['Potential Alternative'] || 0)} substitutes from maintenance knowledge.</div>`
+    : '<div class="empty">No repairs resolved in this range yet.</div>');
 }
+
 
 function procKpiHtml(p) {
   return [
@@ -363,6 +418,7 @@ async function refresh() {
   try {
     const [robots, incidents, metrics, alerts, pos] = await Promise.all([api('/robots'), api('/incidents'), api('/metrics'), api('/notifications'), api('/purchase-orders')]);
     Object.assign(state, { robots, incidents, metrics, alerts, pos });
+    if (state.view === 'dashboard') state.timeline = await api('/metrics/timeline');
     renderConsole(); renderDashboard(); renderCoordinatorLists(); renderProcurement();
     if (state.view === 'coordinator') await renderCoordinatorMain();
     if (state.view === 'workorders') await renderWorkOrders();
@@ -395,9 +451,12 @@ async function runDemo(name) {
 }
 
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-inc-filter],[data-view],[data-incident],[data-select],[data-approve],[data-reject],[data-goto-coord],[data-confirm-repair],[data-po-approve],[data-po-reject],[data-po-ship],[data-po-receive],[data-view-po],#wfClose,#wfClose2');
+  const t = e.target.closest('.hitday[data-day],[data-day-scope],#dayPlay,[data-inc-filter],[data-view],[data-incident],[data-select],[data-approve],[data-reject],[data-goto-coord],[data-confirm-repair],[data-po-approve],[data-po-reject],[data-po-ship],[data-po-receive],[data-view-po],#wfClose,#wfClose2');
   if (!t) return;
   if (t.dataset.view) return showView(t.dataset.view);
+  if (t.classList.contains('hitday')) { stopPlay(); state.dashDay = Number(t.dataset.day); return renderDashboard(); }
+  if (t.dataset.dayScope) { state.dayScope = t.dataset.dayScope; return renderDashboard(); }
+  if (t.id === 'dayPlay') return togglePlay();
   if (t.dataset.incFilter) { state.incFilter = t.dataset.incFilter; return refresh(); }
   if (t.id === 'wfClose' || t.id === 'wfClose2') return closePopup();
   if (t.hasAttribute('data-goto-coord')) { const id = state.popup; closePopup(); return selectIncident(id); }
@@ -473,3 +532,20 @@ $('#workflowDialog').addEventListener('close', () => { state.popup = null; });
   await refresh();
   setInterval(refresh, 1000);
 })();
+
+// Day slider and play button.
+$('#daySlider').addEventListener('input', (e) => { stopPlay(); state.dashDay = Number(e.target.value); renderDashboard(); });
+let playTimer = null;
+function stopPlay() { if (playTimer) { clearInterval(playTimer); playTimer = null; setHtml($('#dayPlay'), '▶ Play'); } }
+function togglePlay() {
+  if (playTimer) return stopPlay();
+  const last = (state.timeline?.days?.length || 1) - 1;
+  if (state.dashDay >= last) state.dashDay = 0;
+  setHtml($('#dayPlay'), '❚❚ Pause');
+  renderDashboard();
+  playTimer = setInterval(() => {
+    if (state.dashDay >= last) return stopPlay();
+    state.dashDay += 1;
+    renderDashboard();
+  }, 900);
+}

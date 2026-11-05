@@ -204,3 +204,27 @@ test('history: AI-assisted and manual incidents feed the dashboard together with
   assert.equal(m1.daily[7].ai, m0.daily[7].ai + 1, 'today counts the new incident');
   assert.equal(workflow.stagePath(db.prepare('SELECT * FROM incidents WHERE ai_assisted = 0 LIMIT 1').get())[1].stage, 'Manual Parts Pick');
 });
+
+test('dashboard timeline: day-by-day KPIs over history plus new data', async () => {
+  const { db, workflow } = fresh();
+  const { timeline } = await import('../server/app.js');
+  const t0 = timeline(db);
+  assert.equal(t0.days.length, 8);
+  const lastHistDay = t0.days[6];
+  assert.ok(lastHistDay.to_date.resolved_incidents >= 20, 'week to date covers the history');
+  assert.ok(lastHistDay.to_date.robot_availability > 0 && lastHistDay.to_date.robot_availability < 1);
+  assert.ok(lastHistDay.to_date.downtime_hours > 0);
+  assert.ok(lastHistDay.to_date.part_discovery['Manual pick by planner'] > 0);
+  assert.ok(lastHistDay.to_date.part_discovery['Documented Supersession'] > 0);
+  assert.ok(t0.days[0].to_date.resolved_incidents < lastHistDay.to_date.resolved_incidents, 'earlier days see less');
+  const { incident } = runScenario(workflow, 'hitl');
+  await until(() => workflow.get(incident.id).stage === STAGES.APPROVAL);
+  const t1 = timeline(db);
+  assert.equal(t1.days[7].open_incidents, 1, 'a new incident waiting on a human is open today');
+  assert.equal(t1.days[7].incidents.ai, t0.days[7].incidents.ai + 1);
+  workflow.approve(incident.id, { approver: 'test' });
+  await until(() => workflow.get(incident.id).stage === STAGES.RESOLVED);
+  const t2 = timeline(db);
+  assert.equal(t2.days[7].day.ai_recovered_parts, t0.days[7].day.ai_recovered_parts + 1);
+  assert.equal(t2.days[7].to_date.part_discovery['Documented Supersession'], lastHistDay.to_date.part_discovery['Documented Supersession'] + (t0.days[7].to_date.part_discovery['Documented Supersession'] - lastHistDay.to_date.part_discovery['Documented Supersession']) + 1);
+});

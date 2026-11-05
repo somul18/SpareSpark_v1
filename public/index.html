@@ -56,13 +56,34 @@
 
     <!-- Dashboard -->
     <section id="view-dashboard" class="view">
-      <div class="kpi-big" id="dashKpis"></div>
+      <div class="card day-bar">
+        <button class="btn sm" id="dayPlay" aria-label="Play through the days">▶ Play</button>
+        <div class="day-slider">
+          <label for="daySlider" class="day-label" id="dayLabel">Today</label>
+          <input type="range" id="daySlider" min="0" max="7" step="1" value="7" aria-describedby="dayLabel">
+          <div class="day-ticks" id="dayTicks"></div>
+        </div>
+        <div class="seg" id="dayScope" role="group" aria-label="Widget scope">
+          <button class="active" data-day-scope="to_date">Week to date</button><button data-day-scope="day">That day only</button>
+        </div>
+      </div>
+      <div class="kpis kpi-6" id="dashKpis"></div>
       <p class="data-scope" id="dashScope"></p>
-      <h2 class="section-title">AI-assisted vs manual</h2>
+      <div class="two-col dash-charts">
+        <div class="card chart-card">
+          <h2 class="chart-title">Maintenance incidents over time</h2>
+          <div class="legend" id="lineLegend"></div>
+          <div id="lineChart" class="line-chart"></div>
+        </div>
+        <div class="card chart-card">
+          <h2 class="chart-title">Part discovery methods <small id="discScope"></small></h2>
+          <div class="legend" id="discLegend"></div>
+          <div id="discChart" class="disc-chart"></div>
+        </div>
+      </div>
+      <h2 class="section-title">AI-assisted vs manual <small id="cmpScope"></small></h2>
       <div class="compare" id="dashCompare"></div>
-      <h2 class="section-title">Incidents per day <small>(last 7 days and today)</small></h2>
-      <div class="card chart-card"><div class="legend" id="dailyLegend"></div><div id="dailyChart" class="daily-chart"></div></div>
-      <h2 class="section-title">Procurement</h2>
+      <h2 class="section-title">Procurement <small>(all data)</small></h2>
       <div class="kpis" id="dashProcKpis"></div>
     </section>
 
