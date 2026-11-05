@@ -156,7 +156,7 @@ How the parts come in, on the Procurement tab:
 
 ### Assets Console (Plant Manager)
 
-KPI strip, the three demo buttons, one card per robot with its live status (green Operational/Restored, red Fault, amber Under Repair or waiting), the open incident, the part used, and First-Time Fix / SLA badges. Clicking a robot with an incident reopens its workflow popup. The table below lists recent incidents.
+KPI strip, the three demo buttons, one card per robot with its live status (green Operational/Restored, red Fault, amber Under Repair or waiting), the open incident, the part used, and First-Time Fix / SLA badges. Clicking a robot with an incident reopens its workflow popup. **See all incidents and work orders** jumps to the Work Orders & Incidents tab.
 
 ![Console after the happy and human-in-the-loop flows](docs/screenshots/10-console-after-both-flows.png)
 
@@ -174,9 +174,15 @@ Alerts for incidents waiting on a part decision, the Spare Parts Agent's recomme
 
 ### Dashboard (VP of Operations)
 
-Operational KPIs (open robot incidents, first-time fix rate, SLA attainment, parts recovered by AI from unstructured data), procurement KPIs (open POs, awaiting delivery and value on order, spend, average PO cycle time, on-time delivery, stockouts and repairs unblocked by procurement), and all work orders with their installation instructions. Every number is computed from the application's own records.
+Operational KPIs (open robot incidents, first-time fix rate, SLA attainment, parts recovered by AI from unstructured data), procurement KPIs (open POs, awaiting delivery and value on order, spend, average PO cycle time, on-time delivery, stockouts and repairs unblocked by procurement). Every number is computed from the application's own records.
 
 ![Dashboard](docs/screenshots/16-dashboard.png)
+
+### Work Orders & Incidents
+
+Incidents and work orders in one place. A KPI strip shows open, waiting and resolved incidents and active and completed work orders. The **Incidents** table lists every incident with its stage, failed and selected part, match type, First-Time Fix, SLA and its work order. The **Work orders** table lists every dispatch the Resolution Agent created, with technician, part, bin, location, status and the installation instructions it quoted from the knowledge records. Clicking a row in either table opens that incident's workflow popup.
+
+![Work Orders & Incidents](docs/screenshots/21-work-orders-and-incidents.png)
 
 ### Knowledge & Inventory
 

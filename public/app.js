@@ -67,13 +67,6 @@ function renderConsole() {
       <div class="meta">${esc(r.robot_type)} · ${esc(r.model)}</div>
       <div class="meta">${esc(r.location)}</div>${inc}</div>`;
   }).join(''));
-
-  setHtml($('#incidentTable'), `<tr><th>Incident</th><th>Robot</th><th>Fault</th><th>Failed part</th><th>Stage</th><th>Selected part</th><th>Match</th><th>FTF</th><th>SLA</th></tr>` +
-    (state.incidents.length ? state.incidents.slice(0, 10).map((i) => `<tr class="click" data-incident="${i.id}">
-      <td>${esc(i.number)}${i.external_number ? `<br><small>${esc(i.external_number)}</small>` : ''}</td><td>${esc(i.robot.name)}</td><td>${esc(i.fault_code)}</td>
-      <td>${esc(i.failed_part_number || '')}</td><td>${stagePill(i.stage)}</td><td>${esc(i.selected_part_number || '')}</td><td>${matchPill(i.match_type)}</td>
-      <td>${i.first_time_fix === null ? '' : i.first_time_fix ? 'Yes' : 'No'}</td><td>${esc(i.sla_status || '')}</td></tr>`).join('')
-      : '<tr><td colspan="9"><small>No incidents yet. Run a demo flow above.</small></td></tr>'));
 }
 
 function renderDashboard() {
@@ -131,12 +124,25 @@ function renderProcurement() {
       : '<tr><td colspan="11"><small>No purchase orders yet. Run the procurement flow, or run the happy flow until SM-400-J3 runs out.</small></td></tr>'));
 }
 
-async function loadWorkOrders() {
+async function renderWorkOrders() {
   const wos = await api('/work-orders');
-  setHtml($('#woTable'), '<tr><th>Work order</th><th>Incident</th><th>Robot</th><th>Technician</th><th>Part</th><th>Bin</th><th>Location</th><th>Status</th><th>Instructions</th></tr>' +
-    (wos.length ? wos.map((w) => `<tr><td>${esc(w.number)}</td><td>${esc(w.incident_number)}</td><td>${esc(w.robot)}</td><td>${esc(w.technician)}</td><td><b>${esc(w.part_number)}</b></td>
-      <td>${esc(w.bin)}</td><td>${esc(w.location)}</td><td>${esc(w.status)}</td><td><small>${esc(w.install_instructions).replace(/\n/g, '<br>')}</small></td></tr>`).join('')
-      : '<tr><td colspan="9"><small>No work orders yet.</small></td></tr>'));
+  const woByIncident = Object.fromEntries(wos.map((w) => [w.incident_id, w]));
+  const m = state.metrics;
+  const activeWo = wos.filter((w) => w.status === 'Dispatched' || w.status === 'In Progress').length;
+  setHtml($('#woKpis'), [
+    ['Open incidents', m.open_incidents ?? '–'], ['Waiting on human', m.pending_approvals ?? 0], ['Resolved incidents', m.resolved_incidents ?? 0],
+    ['Active work orders', activeWo], ['Completed work orders', wos.filter((w) => w.status === 'Completed').length], ['Total work orders', wos.length],
+  ].map(([l, v]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div></div>`).join(''));
+  setHtml($('#incidentTable'), `<tr><th>Incident</th><th>Robot</th><th>Fault</th><th>Failed part</th><th>Stage</th><th>Selected part</th><th>Match</th><th>FTF</th><th>SLA</th><th>Work order</th><th>Opened</th></tr>` +
+    (state.incidents.length ? state.incidents.map((i) => `<tr class="click" data-incident="${i.id}">
+      <td>${esc(i.number)}${i.external_number ? `<br><small>${esc(i.external_number)}</small>` : ''}</td><td>${esc(i.robot.name)}</td><td>${esc(i.fault_code)}</td>
+      <td>${esc(i.failed_part_number || '')}</td><td>${stagePill(i.stage)}</td><td>${esc(i.selected_part_number || '')}</td><td>${matchPill(i.match_type)}</td>
+      <td>${i.first_time_fix === null ? '' : i.first_time_fix ? 'Yes' : 'No'}</td><td>${esc(i.sla_status || '')}</td><td>${esc(woByIncident[i.id]?.number || '')}${woByIncident[i.id] ? `<br><small>${esc(woByIncident[i.id].status)}</small>` : ''}</td><td>${time(i.created_at)}</td></tr>`).join('')
+      : '<tr><td colspan="11"><small>No incidents yet. Run a demo flow from the Assets Console.</small></td></tr>'));;
+  setHtml($('#woTable'), '<tr><th>Work order</th><th>Incident</th><th>Robot</th><th>Technician</th><th>Part</th><th>Bin</th><th>Location</th><th>Status</th><th>Created</th><th>Instructions</th></tr>' +
+    (wos.length ? wos.map((w) => `<tr class="click" data-incident="${w.incident_id}"><td><b>${esc(w.number)}</b></td><td>${esc(w.incident_number)}</td><td>${esc(w.robot)}</td><td>${esc(w.technician)}</td><td><b>${esc(w.part_number)}</b></td>
+      <td>${esc(w.bin)}</td><td>${esc(w.location)}</td><td><span class="pill ${w.status === 'Completed' ? 'ok' : w.status === 'Cancelled' ? 'bad' : 'info'}">${esc(w.status)}</span></td><td>${time(w.created_at)}</td><td><small>${esc(w.install_instructions).replace(/\n/g, '<br>')}</small></td></tr>`).join('')
+      : '<tr><td colspan="10"><small>No work orders yet. One is created when a technician is dispatched.</small></td></tr>'));
 }
 
 // ---------- coordinator ----------
@@ -294,7 +300,7 @@ async function refresh() {
     Object.assign(state, { robots, incidents, metrics, alerts, pos });
     renderConsole(); renderDashboard(); renderCoordinatorLists(); renderProcurement();
     if (state.view === 'coordinator') await renderCoordinatorMain();
-    if (state.view === 'dashboard') await loadWorkOrders();
+    if (state.view === 'workorders') await renderWorkOrders();
     if (state.view === 'integration') await renderIntegration();
     if (state.popup) await renderPopup();
   } catch (err) { console.warn(err); }

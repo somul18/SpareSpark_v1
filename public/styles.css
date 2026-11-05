@@ -176,3 +176,4 @@ table.grid tr.click:hover td { background: var(--surface-2); }
 .po-card .po-body { font-size: 13px; margin-top: 6px; color: var(--muted); }
 .po-card .po-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
 .po-card input { width: 80px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.see-all { margin: 18px 0 0; }
