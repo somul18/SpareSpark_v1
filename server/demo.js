@@ -59,8 +59,14 @@ export function resetDemo(workflow) {
   tx(db, () => {
     db.exec(`
       UPDATE robots SET current_incident_id = NULL;
-      DELETE FROM chat_messages; DELETE FROM events; DELETE FROM work_orders;
-      DELETE FROM reservations; DELETE FROM purchase_orders; DELETE FROM incidents; DELETE FROM webhook_log;
+      DELETE FROM chat_messages WHERE incident_id IS NULL OR incident_id IN (SELECT id FROM incidents WHERE is_historical = 0);
+      DELETE FROM events WHERE is_historical = 0;
+      DELETE FROM work_orders WHERE is_historical = 0;
+      DELETE FROM reservations WHERE is_historical = 0;
+      DELETE FROM purchase_orders WHERE is_historical = 0;
+      DELETE FROM inventory_movements WHERE is_historical = 0;
+      DELETE FROM incidents WHERE is_historical = 0;
+      DELETE FROM webhook_log;
       DELETE FROM counters;
     `);
     seedOperational(db);

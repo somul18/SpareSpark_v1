@@ -177,3 +177,38 @@ table.grid tr.click:hover td { background: var(--surface-2); }
 .po-card .po-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
 .po-card input { width: 80px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
 .see-all { margin: 18px 0 0; }
+
+/* History, AI vs manual, daily chart */
+:root { --series-ai: #2a78d6; --series-manual: #eb6834; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --series-ai: #3987e5; --series-manual: #d95926; } }
+:root[data-theme="dark"] { --series-ai: #3987e5; --series-manual: #d95926; }
+.pill.ai { background: color-mix(in srgb, var(--series-ai) 16%, transparent); color: var(--text); box-shadow: inset 3px 0 0 var(--series-ai); }
+.pill.manual { background: color-mix(in srgb, var(--series-manual) 16%, transparent); color: var(--text); box-shadow: inset 3px 0 0 var(--series-manual); }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.swatch.ai { background: var(--series-ai); } .swatch.manual { background: var(--series-manual); }
+.data-scope { color: var(--muted); margin: 10px 2px 0; font-size: 13px; }
+.compare { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 14px; }
+.compare .card { padding: 14px 16px; }
+.cmp { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.cmp th, .cmp td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+.cmp tr:last-child th, .cmp tr:last-child td { border-bottom: 0; }
+.cmp th { font-weight: 500; color: var(--muted); } .cmp tr:first-child th { color: var(--text); font-weight: 600; }
+.cmp td { font-size: 18px; font-weight: 600; } .cmp td.win::after { content: ' ✓'; color: var(--ok); font-size: 14px; }
+.cmp-note { color: var(--muted); line-height: 1.5; font-size: 14px; } .cmp-note b { color: var(--text); }
+.chart-card { padding: 12px 14px; }
+.legend { display: flex; gap: 16px; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.daily-chart svg { width: 100%; height: auto; display: block; }
+.daily-chart .grid-line { stroke: var(--border); stroke-width: 1; }
+.daily-chart .axis { fill: var(--muted); font-size: 11px; }
+.daily-chart .val { fill: var(--text); font-size: 11px; font-weight: 600; }
+.daily-chart .bar.ai { fill: var(--series-ai); } .daily-chart .bar.manual { fill: var(--series-manual); }
+.daily-chart .hit { fill: transparent; } .daily-chart .day:hover .hit, .daily-chart .day:focus .hit { fill: color-mix(in srgb, var(--text) 6%, transparent); }
+.daily-chart .day:focus { outline: none; }
+.table-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface); margin-bottom: 10px; }
+.seg button { border: 0; background: transparent; padding: 7px 12px; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.active { background: var(--surface-2); color: var(--text); font-weight: 600; }
+.scroll-y { max-height: 320px; overflow-y: auto; }
+td.num.neg { color: var(--bad); } td.num.pos { color: var(--ok); }
+@media (max-width: 760px) { .compare { grid-template-columns: 1fr; } }

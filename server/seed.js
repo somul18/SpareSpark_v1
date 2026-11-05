@@ -13,6 +13,11 @@ export const FAULT_CODES = [
   { code: 'W-GEAR-BACKLASH', robot_model: 'PX-200', component: 'Wrist gear reducer', part_number: 'GR-220-W' },
   { code: 'GRIP-VAC-LOW', robot_model: 'PalLift 900', component: 'Vacuum gripper pump', part_number: 'VP-90-G' },
   { code: 'ATOM-CLOG', robot_model: 'CoatPro C4', component: 'Paint atomizer nozzle', part_number: 'AN-14-C' },
+  { code: 'WIRE-FEED-SLIP', robot_model: 'ArcMaster W6', component: 'Wire feed roller kit', part_number: 'WF-12-A' },
+  { code: 'TORCH-TEMP-HIGH', robot_model: 'ArcMaster W6', component: 'Torch coolant pump', part_number: 'TC-7-A' },
+  { code: 'VAC-CUP-WEAR', robot_model: 'PX-200', component: 'Suction cup set', part_number: 'VC-30-P' },
+  { code: 'J1-ENCODER-ERR', robot_model: 'PalLift 900', component: 'Axis 1 encoder', part_number: 'EN-500-J1' },
+  { code: 'HOSE-PRESSURE', robot_model: 'CoatPro C4', component: 'Paint supply hose', part_number: 'PH-8-C' },
 ];
 
 // Note: GR-220-W has no superseded_by value. Inventory does not know about W2;
@@ -25,6 +30,11 @@ export const PARTS = [
   { part_number: 'GR-230-W', description: 'Gear reducer, wrist, PX-300 series', compatible_models: 'PX-300', qty_on_hand: 4, bin: 'B-18', status: 'Active' },
   { part_number: 'VP-90-G', description: 'Vacuum pump, gripper', compatible_models: 'PalLift 900', qty_on_hand: 5, bin: 'C-03', status: 'Active' },
   { part_number: 'AN-14-C', description: 'Atomizer nozzle, 1.4 mm', compatible_models: 'CoatPro C4', qty_on_hand: 12, bin: 'D-01', status: 'Active' },
+  { part_number: 'WF-12-A', description: 'Wire feed roller kit, 1.2 mm', compatible_models: 'ArcMaster W6', qty_on_hand: 8, bin: 'A-20', status: 'Active', install_notes: 'Set feed roller tension to 3 and run a 30 s wire inch test.' },
+  { part_number: 'TC-7-A', description: 'Torch coolant pump, 7 l/min', compatible_models: 'ArcMaster W6', qty_on_hand: 1, bin: 'A-22', status: 'Active', install_notes: 'Bleed the coolant loop before the first weld.' },
+  { part_number: 'VC-30-P', description: 'Suction cup set, 30 mm (4 pcs)', compatible_models: 'PX-200', qty_on_hand: 36, bin: 'B-02', status: 'Active' },
+  { part_number: 'EN-500-J1', description: 'Absolute encoder, axis 1', compatible_models: 'PalLift 900', qty_on_hand: 1, bin: 'C-07', status: 'Active', install_notes: 'Run the axis 1 zero-point calibration after replacing the encoder.' },
+  { part_number: 'PH-8-C', description: 'Paint supply hose, 8 m', compatible_models: 'CoatPro C4', qty_on_hand: 3, bin: 'D-05', status: 'Active', install_notes: 'Flush with solvent and check for leaks at 6 bar.' },
   { part_number: 'SM-380-J3', description: 'Servo motor, joint 3, 380 W (legacy)', compatible_models: 'ArcMaster W5', qty_on_hand: 1, bin: 'A-11', status: 'Superseded', superseded_by: 'SM-400-J3' },
 ];
 
@@ -66,6 +76,8 @@ export const SYNONYMS = [
   ['joint 3 servo motor', ['j3 servo', 'joint 3 motor', 'joint 3 servo', 'servo motor', 'servo']],
   ['vacuum gripper pump', ['vacuum pump', 'gripper pump']],
   ['paint atomizer nozzle', ['atomizer', 'nozzle']],
+  ['axis 1 encoder', ['encoder', 'j1 encoder']],
+  ['paint supply hose', ['paint hose', 'hose']],
 ];
 
 export const VENDORS = [
@@ -84,6 +96,11 @@ export const PART_SOURCING = {
   'GR-230-W': ['Meridian Motion Parts', 2600, 1],
   'VP-90-G': ['Northline Industrial', 420, 2],
   'AN-14-C': ['Northline Industrial', 65, 10],
+  'WF-12-A': ['Apex Robotics Supply', 180, 6],
+  'TC-7-A': ['Apex Robotics Supply', 640, 1],
+  'VC-30-P': ['Northline Industrial', 35, 40],
+  'EN-500-J1': ['Northline Industrial', 760, 2],
+  'PH-8-C': ['Northline Industrial', 140, 4],
 };
 
 export function seedProcurement(db) {
@@ -134,5 +151,15 @@ export function seedOperational(db) {
 export function seed(db) {
   seedReference(db);
   seedOperational(db);
+  seedProcurement(db);
+}
+
+// Existing databases: add reference data and parts introduced in later releases
+// without touching current stock levels.
+export function seedMissing(db) {
+  seedReference(db);
+  const ins = db.prepare(`INSERT OR IGNORE INTO parts(part_number, description, compatible_models, qty_on_hand, qty_reserved, bin, status, superseded_by, install_notes)
+    VALUES (?,?,?,?,0,?,?,?,?)`);
+  for (const p of PARTS) ins.run(p.part_number, p.description, p.compatible_models, p.qty_on_hand, p.bin, p.status, p.superseded_by ?? null, p.install_notes ?? null);
   seedProcurement(db);
 }

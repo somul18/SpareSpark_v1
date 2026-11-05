@@ -29,6 +29,7 @@ SpareSpark has **no dependency on ServiceNow**. An optional [ServiceNow connecto
   - [1. Happy flow: exact part in stock](#1-happy-flow-exact-part-in-stock)
   - [2. Human-in-the-loop flow: substitute found in maintenance knowledge](#2-human-in-the-loop-flow-substitute-found-in-maintenance-knowledge)
   - [3. Procurement flow: nothing in stock](#3-procurement-flow-nothing-in-stock)
+- [One week of history](#one-week-of-history)
 - [Screens](#screens)
 - [How the Spare Parts Agent decides](#how-the-spare-parts-agent-decides)
 - [Workflow and stages](#workflow-and-stages)
@@ -53,7 +54,7 @@ npm install        # optional: installs the Claude SDK for LLM explanations
 npm start          # http://localhost:3000
 ```
 
-On first start SpareSpark creates `data/sparespark.db` (SQLite) and seeds it with the demo plant: four robots, eight spare parts, three vendors, and ten maintenance records written the way technicians really write them. Databases created by an earlier version upgrade themselves on start and keep their stock levels.
+On first start SpareSpark creates `data/sparespark.db` (SQLite) and seeds it with the demo plant: four robots, thirteen spare parts, three vendors, ten maintenance records written the way technicians really write them, and [one week of plant history](#one-week-of-history). Databases created by an earlier version upgrade themselves on start and keep their stock levels.
 
 With Docker:
 
@@ -66,7 +67,7 @@ docker run -p 3000:3000 -v sparespark:/data sparespark
 
 ## The three demo flows
 
-The Assets Console has one button per flow. Each button reports a fault on a robot, opens the workflow popup, and lights up the steps as the agents work. The whole demo runs in under three minutes, and **Reset Demo** puts robots, stock, incidents and purchase orders back to the start (knowledge records are kept).
+The Assets Console has one button per flow. Each button reports a fault on a robot, opens the workflow popup, and lights up the steps as the agents work. The whole demo runs in under three minutes, and **Reset Demo** puts robots and stock back to the start and removes the incidents, work orders and purchase orders the demo created. Knowledge records and the [week of history](#one-week-of-history) are kept.
 
 ### 1. Happy flow: exact part in stock
 
@@ -152,6 +153,27 @@ How the parts come in, on the Procurement tab:
 
 ---
 
+## One week of history
+
+So the dashboard has something to report from the first minute, every new database gets the **seven days before it was created** filled in: the plant's last week. All of it is marked as history (`is_historical = 1`), so **Reset Demo never deletes it**. Reset only clears what the demo buttons created since. Every KPI and chart reports **history plus new data together**.
+
+| What | How much | Highlights |
+|---|---|---|
+| Incidents | 23, on all four robots, across 9 fault codes | 14 handled by SpareSpark's agents, 9 handled manually. 4 arrived from ServiceNow (`INC00…`). |
+| Work orders | 22 completed | Technicians M. Ortiz, A. Chen, R. Singh and J. Okafor, with installation notes |
+| Purchase orders | 7 | 2 bought for robots that were down (rush), 4 stock replenishments (one delivered late), 1 rejected on a budget hold |
+| Stock movements | 34 | Issues to work orders, receipts from POs, wrong parts returned to stores, two cycle-count adjustments |
+
+The week tells a story. Early on, faults are handled manually: the planner picks a part from memory. Three times that is the wrong part: a legacy 380 W servo, a GR-230-W that does not fit the PX-200 (which kept EveThen down overnight), and a hose that is too short. Once, a calibration step is skipped. Each mistake costs a second visit. Later in the week, faults go through SpareSpark. It finds the GR-220-W2 supersession twice, with the coordinator approving it. When a part is out of stock, the Procurement Agent drafts a PO. One incident ends in *Needs Attention* because its PO was rejected. On history alone, the dashboard's **AI-assisted vs manual** panel shows 100% vs 56% first-time fix, 79% vs 56% SLA, and 4.5 h vs 6.5 h to resolve. The numbers move as you run new demo flows.
+
+History incidents use their own number ranges (`SSI0011…`, `SSWO0001…`, `PO0004…`), so they never clash with new ones. They open in the same workflow popup. A manual incident shows its own short path: *Malfunction detected, Manual Parts Pick, Repair in progress, Ticket resolved*.
+
+![Manual incident from history](docs/screenshots/22-history-manual-incident.png)
+
+Set `SPARESPARK_HISTORY=off` to start without history. Databases from an earlier version get the history added on their next start, and their current stock levels are kept.
+
+---
+
 ## Screens
 
 The console has seven tabs:
@@ -186,21 +208,30 @@ Alerts for incidents waiting on a part decision, the Spare Parts Agent's recomme
 
 ### Dashboard (VP of Operations)
 
-Operational KPIs (open robot incidents, first-time fix rate, SLA attainment, parts recovered by AI from unstructured data), procurement KPIs (open POs, awaiting delivery and value on order, spend, average PO cycle time, on-time delivery, stockouts and repairs unblocked by procurement). Every number is computed from the application's own records.
+The dashboard covers all incidents, history plus new, and says how many of each it is counting.
+
+- **Operational KPIs:** open robot incidents, first-time fix rate, SLA attainment, and parts recovered by AI from unstructured data.
+- **AI-assisted vs manual:** first-time fix, SLA attainment and average time to resolve, side by side. A check mark shows the better side.
+- **Incidents per day:** a chart of the last 7 days and today, split into AI-assisted and manual. Hover over a bar for the numbers.
+- **Procurement KPIs:** open POs, awaiting delivery and value on order, spend, average PO cycle time, on-time delivery, and stockouts with the repairs procurement unblocked.
+
+Every number is computed from the application's own records.
 
 ![Dashboard](docs/screenshots/16-dashboard.png)
 
 ### Work Orders & Incidents
 
-Incidents and work orders in one place. A KPI strip shows open, waiting and resolved incidents and active and completed work orders. The **Incidents** table lists every incident with its stage, failed and selected part, match type, First-Time Fix, SLA and its work order. The **Work orders** table lists every dispatch the Resolution Agent created, with technician, part, bin, location, status and the installation instructions it quoted from the knowledge records. Clicking a row in either table opens that incident's workflow popup.
+Incidents and work orders in one place. A KPI strip shows open, waiting and resolved incidents and active and completed work orders. The **Incidents** table lists every incident with its stage, failed and selected part, match type, whether it was **AI-assisted or manual**, First-Time Fix, SLA, its work order and its source (**History** or **New**). Filters above the table show all, new, history, AI-assisted or manual. The **Work orders** table lists every dispatch the Resolution Agent created, with technician, part, bin, location, status and the installation instructions it quoted from the knowledge records. Clicking a row in either table opens that incident's workflow popup.
 
 ![Work Orders & Incidents](docs/screenshots/21-work-orders-and-incidents.png)
 
 ### Knowledge & Inventory
 
-The structured inventory (on hand, reserved, on order, bin, status, vendor and unit cost) next to the unstructured maintenance records. **Try a lookup** runs the Spare Parts Agent on any part number, outside of an incident.
+The structured inventory (on hand, reserved, on order, bin, status, vendor and unit cost) next to the unstructured maintenance records. **Stock movements** lists every issue to a work order, PO receipt, return to stores and cycle-count adjustment, history included. **Try a lookup** runs the Spare Parts Agent on any part number, outside of an incident.
 
 ![Knowledge and inventory](docs/screenshots/17-knowledge-and-inventory.png)
+
+![Stock movements](docs/screenshots/23-stock-movements.png)
 
 ![Part lookup](docs/screenshots/18-part-lookup.png)
 
@@ -306,7 +337,7 @@ flowchart TB
 ```
 
 - **Server:** plain `node:http` and `node:sqlite`. No framework and no native modules.
-- **Data model:** robots, fault codes, parts, vendors, purchase orders, knowledge records, synonyms, technicians, incidents, reservations, work orders, events, chat messages, webhook log. The schema is in [`server/db.js`](server/db.js) and the seed data in [`server/seed.js`](server/seed.js).
+- **Data model:** robots, fault codes, parts, vendors, purchase orders, knowledge records, synonyms, technicians, incidents, reservations, work orders, inventory movements, events, chat messages, webhook log. History rows carry `is_historical = 1`, and incidents carry `ai_assisted`. The schema is in [`server/db.js`](server/db.js) and the seed data in [`server/seed.js`](server/seed.js).
 - **Console:** vanilla HTML, CSS and JS in [`public/`](public), with light and dark themes and responsive layout.
 
 ---
@@ -348,7 +379,7 @@ All endpoints are JSON under `/api`. Set `SPARESPARK_API_KEY` to require an `X-A
 | POST | `/recommendations` | Stateless lookup: `{ part_number, robot_model? }` returns the full recommendation with evidence. |
 | GET/POST | `/knowledge` | List (`?q=`) or upsert knowledge records: `{ ref, source_type, title, body, robot_model?, author? }` where `source_type` is `kb_article`, `work_order`, `tech_note` or `maintenance_history`. |
 | GET/POST | `/robots` | List or upsert robots, e.g. from a CMDB: `{ name, model, robot_type?, location?, external_ci_id? }`. |
-| GET | `/parts`, `/fault-codes`, `/technicians`, `/work-orders` | Reference data. |
+| GET | `/parts`, `/fault-codes`, `/technicians`, `/work-orders`, `/inventory-movements` | Reference data and stock movements. |
 | GET | `/metrics` | Operational and procurement KPIs. |
 | GET | `/events`, `/webhooks` | Event log and outbound webhook log. |
 | GET | `/health`, `/config` | Health check and server settings (no key required). |
@@ -402,6 +433,7 @@ Copy `.env.example` to `.env`; `npm start` loads it automatically.
 | `ANTHROPIC_API_KEY` | (none) | Turn on Claude explanations and chat answers. |
 | `SPARESPARK_MODEL` | `claude-opus-5-5` | Claude model. |
 | `SPARESPARK_LLM` | (on when a key is set) | `off` forces deterministic mode. |
+| `SPARESPARK_HISTORY` | on | `off` skips the seeded week of plant history. |
 | `SPARESPARK_DEMO` | on | `off` hides the demo buttons and disables all simulation. |
 | `SPARESPARK_STEP_MS` | `1500` | Pause between agent steps, for a watchable demo. |
 | `SPARESPARK_DEMO_REPAIR_MS` | `2500` | Simulated repair confirmation delay (demo incidents only). |
@@ -421,7 +453,7 @@ Copy `.env.example` to `.env`; `npm start` loads it automatically.
 npm test
 ```
 
-15 tests cover:
+16 tests cover:
 - the exact match;
 - GR-220-W2 found from real sources, with messy wording matched and no invented references;
 - that the recommendation follows the data rather than a hardcoded answer;
@@ -429,7 +461,8 @@ npm test
 - the happy flow running out of stock and handing over to procurement;
 - rejection fallback, and procurement of the documented successor;
 - rejection of a PO;
-- duplicate prevention and reset;
+- duplicate prevention, and a reset that keeps the history;
+- AI-assisted vs manual metrics and the daily series over history plus new data;
 - the LLM grounding guard;
 - the ServiceNow scripts against a live SpareSpark server.
 
@@ -442,6 +475,7 @@ server/
   index.js            start the server
   app.js              HTTP API, metrics, static files
   db.js, seed.js      SQLite schema, upgrades, seed data
+  history.js          one week of plant history (kept by Reset Demo)
   knowledge.js        Spare Parts Agent engine
   workflow.js         Triage, Spare Parts, Procurement and Resolution agents; stage machine
   llm.js              optional Claude layer with grounding guard
