@@ -78,7 +78,7 @@ The Assets Console has one button per flow. Each button reports a fault on a rob
 | 2 | Triage Agent | Maps the fault code to the **Joint 3 servo motor, part SM-400-J3**. |
 | 3 | Spare Parts Agent | Finds an **exact match**: 2 on hand in bin A-14. No approval needed. |
 | 4 | Resolution Agent | Reserves 1 unit (inventory shows it as reserved, so no one else can take it). |
-| 5 | Resolution Agent | Creates work order SSWO…, assigns M. Ortiz, and attaches the installation notes from the inventory record and KB0010101 ("re-home joint 3 and run encoder calibration"). |
+| 5 | Resolution Agent | Creates work order SSWO…, assigns M. Ortiz, and attaches the installation notes from the inventory record and KB0010101 ("re-home joint 3 and run encoder calibration"). The work order appears on the **Work Orders & Incidents** tab. |
 | 6 | Technician | Robot goes amber (Under Repair). In the demo, the repair confirmation is simulated after a few seconds. |
 | 7 | Resolution Agent | Incident resolved: **Right part dispatched, First-Time Fix = Yes, SLA = Met**. Robot shows Restored. |
 
@@ -153,6 +153,18 @@ How the parts come in, on the Procurement tab:
 ---
 
 ## Screens
+
+The console has seven tabs:
+
+| Tab | Who uses it | What it shows |
+|---|---|---|
+| [Assets Console](#assets-console-plant-manager) | Plant manager | Robot cards with live status, KPIs, the three demo buttons |
+| [Coordinator](#coordinator-logistics-parts-coordinator) | Logistics Parts Coordinator | Alerts, the agent's recommendation with evidence, approve or reject, chat |
+| [Dashboard](#dashboard-vp-of-operations) | VP of Operations | Operational and procurement KPIs |
+| [Work Orders & Incidents](#work-orders--incidents) | Maintenance supervisor | Every incident and every work order in one place |
+| [Knowledge & Inventory](#knowledge--inventory) | Anyone | Spare-parts stock, maintenance records, part lookup |
+| [Procurement](#procurement) | Procurement and receiving | POs to approve and receive, all purchase orders |
+| [Integrations](#integrations) | Admin | ServiceNow setup and the outbound webhook log |
 
 ### Assets Console (Plant Manager)
 
@@ -273,7 +285,7 @@ flowchart LR
 ```mermaid
 flowchart TB
   subgraph Browser
-    UI[Console: Assets, Coordinator, Dashboard,<br/>Knowledge & Inventory, Procurement, Integrations]
+    UI[Console: Assets, Coordinator, Dashboard,<br/>Work Orders & Incidents, Knowledge & Inventory,<br/>Procurement, Integrations]
   end
   subgraph SpareSpark["SpareSpark server (Node.js)"]
     API[REST API<br/>server/app.js]
