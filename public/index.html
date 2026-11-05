@@ -17,6 +17,7 @@
       <button class="tab active" data-view="console">Assets Console</button>
       <button class="tab" data-view="coordinator">Coordinator <span id="alertBadge" class="badge-count" hidden>0</span></button>
       <button class="tab" data-view="dashboard">Dashboard</button>
+      <button class="tab" data-view="workorders">Work Orders &amp; Incidents</button>
       <button class="tab" data-view="knowledge">Knowledge &amp; Inventory</button>
       <button class="tab" data-view="procurement">Procurement <span id="poBadge" class="badge-count" hidden>0</span></button>
       <button class="tab" data-view="integration">Integrations</button>
@@ -35,8 +36,7 @@
         <button class="btn ghost" id="btnReset">Reset Demo</button>
       </div>
       <div class="robots" id="robots"></div>
-      <h2 class="section-title">Recent incidents</h2>
-      <div class="table-wrap"><table class="grid" id="incidentTable"></table></div>
+      <p class="see-all"><button class="btn ghost" data-view="workorders">See all incidents and work orders →</button></p>
     </section>
 
     <!-- Coordinator -->
@@ -59,7 +59,14 @@
       <div class="kpi-big" id="dashKpis"></div>
       <h2 class="section-title">Procurement</h2>
       <div class="kpis" id="dashProcKpis"></div>
-      <h2 class="section-title">Work orders</h2>
+    </section>
+
+    <!-- Work Orders & Incidents -->
+    <section id="view-workorders" class="view">
+      <div class="kpis" id="woKpis"></div>
+      <h2 class="section-title">Incidents <small>(click a row to open its workflow)</small></h2>
+      <div class="table-wrap"><table class="grid" id="incidentTable"></table></div>
+      <h2 class="section-title">Work orders <small>(created by the Resolution Agent when a technician is dispatched)</small></h2>
       <div class="table-wrap"><table class="grid" id="woTable"></table></div>
     </section>
 
