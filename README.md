@@ -36,6 +36,7 @@ SpareSpark has **no dependency on ServiceNow**. An optional [ServiceNow connecto
 - [Architecture](#architecture)
 - [API](#api)
 - [ServiceNow connector](#servicenow-connector)
+- [Deploy to Google Cloud](#deploy-to-google-cloud)
 - [Configuration](#configuration)
 - [Tests](#tests)
 - [Project layout](#project-layout)
@@ -437,6 +438,41 @@ sequenceDiagram
 What it adds: a `SpareSparkClient` Script Include, an async Business Rule on incident, UI Actions (*Send to SpareSpark*, *Approve part*, *Reject part*, *Show status*, *Confirm repair*, and *Send to SpareSpark* on published KB articles), a Scripted REST `POST /events` webhook receiver, and `sparespark.*` system properties. The link is kept in the incident's standard `correlation_id` and `correlation_display` fields, so no tables or columns are added. Purchase order status is included in the work notes during procurement.
 
 Install and configuration steps, and what has and has not been verified: [servicenow-plugin/README.md](servicenow-plugin/README.md). The scripts are tested against a live SpareSpark server with a mock of the Glide APIs. They have **not** yet been imported into a real ServiceNow instance. Rebuild the update set with `npm run build:servicenow`.
+
+---
+
+## Deploy to Google Cloud
+
+SpareSpark runs on **Cloud Run** from the included `Dockerfile`. One script builds the image with Cloud Build and deploys it.
+
+**Before you start:** a Google Cloud project with billing enabled, and the [gcloud CLI](https://cloud.google.com/sdk/docs/install) (`brew install --cask google-cloud-sdk` on a Mac).
+
+```bash
+gcloud auth login                       # sign in with your Google account
+gcloud projects list                    # find your project id
+PROJECT=<project-id> ./deploy/gcp/deploy-cloud-run.sh
+```
+
+The script:
+1. Enables Cloud Run, Cloud Build and Artifact Registry.
+2. Builds and deploys the `sparespark` service.
+3. Prints the public URL and an API key. The console asks for the key once per browser.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REGION` | `us-central1` | Cloud Run region |
+| `SERVICE` | `sparespark` | Service name |
+| `ALWAYS_ON=1` | off | Keeps one instance running, so demo data survives idle periods. This costs roughly $50 a month instead of near zero. |
+| `PUBLIC=1` | off | No API key: anyone with the URL can use the console and API |
+| `SPARESPARK_API_KEY` | random | Use your own key instead of a generated one |
+| `ANTHROPIC_API_KEY` | none | Turns on Claude-written explanations |
+
+How it runs on Cloud Run:
+- **One instance at most**, because SQLite and the workflow timers live in that process. CPU stays allocated between requests (`--no-cpu-throttling`), so the agents keep working while the popup is closed.
+- **The database is in the instance's memory.** When the service scales to zero after about 15 idle minutes, or is redeployed, the next visitor gets a fresh instance. The week of history is seeded again automatically, so that behaves like **Reset Demo**. Use `ALWAYS_ON=1` during a live demo if you want demo incidents to stay.
+- **ServiceNow:** set `sparespark.base_url` to the Cloud Run URL and `sparespark.api_key` to the printed key.
+
+To remove it: `gcloud run services delete sparespark --region us-central1`.
 
 ---
 
