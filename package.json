@@ -1,0 +1,20 @@
+{
+  "name": "sparespark",
+  "version": "1.0.0",
+  "description": "SpareSpark: finds the right spare part for failed industrial robots, including substitutes recovered from maintenance knowledge. Standalone, with an optional ServiceNow plugin.",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --watch server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "build:servicenow": "node servicenow-plugin/build-update-set.js"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^1.0.0"
+  },
+  "license": "UNLICENSED"
+}
