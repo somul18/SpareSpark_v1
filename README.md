@@ -13,7 +13,7 @@ Requires Node.js 22.13 or later. No other dependencies are required.
 ```bash
 npm install        # optional: installs the Claude SDK for LLM explanations
 npm start          # http://localhost:3000
-npm test           # 12 tests: engine, both demo flows, rejection, ServiceNow plugin contract
+npm test           # 15 tests: engine, all three demo flows, rejection, procurement, ServiceNow plugin contract
 ```
 
 Or with Docker: `docker build -t sparespark . && docker run -p 3000:3000 -v sparespark:/data sparespark`.
@@ -26,8 +26,9 @@ The database (SQLite, `data/sparespark.db`) is created and seeded on first start
 2. **Run Happy Flow**: AdamNow faults with `J3-OVERCURRENT`. Triage finds `SM-400-J3`, inventory has 2 in bin A-14, one is reserved, M. Ortiz is dispatched, the simulated repair is confirmed, the incident resolves with First-Time Fix = Yes and SLA = Met.
 3. **Run Human-in-the-Loop Flow**: EveThen faults with `W-GEAR-BACKLASH`. `GR-220-W` is obsolete with 0 on hand. The Spare Parts Agent searches 10 maintenance records, matches entries written as "wrist gearbox", "GR220W reducer" and "wrist red. W", and recommends `GR-220-W2` as a **Documented Supersession** citing TN-0042, WO-1187, MH-2207 and KB0010334, with the two-shim installation note. It lists `GR-225-W` as a lower-confidence **Potential Alternative** and excludes `GR-230-W` because TN-0061 says it does not fit. The workflow pauses.
 4. **Coordinator** tab: chat with the Spare Parts Agent, then **Select this part**. The workflow resumes, reserves one GR-220-W2 from bin B-12, dispatches the technician with the shim instructions, and resolves.
-5. **Dashboard**: open incidents, first-time fix rate, SLA attainment, parts recovered by AI.
-6. **Reset Demo** restores robots, inventory and incidents. Knowledge records are kept.
+5. **Run Procurement Flow**: simulates a stockout of `SM-400-J3` and faults AdamNow. With no part and no substitute in stock, the Procurement Agent drafts a purchase order (2 x SM-400-J3 from Apex Robotics Supply, $3,700) and the repair pauses for the Procurement Coordinator. Approve it from the popup or the **Procurement** tab; the simulated vendor ships it a few seconds later with a tracking number. Click **Receive**: stock is added to bin A-14, one unit is reserved, and the repair continues to dispatch and resolution. Running the happy flow three times gets you to the same place without the simulated stockout.
+6. **Dashboard**: open incidents, first-time fix rate, SLA attainment, parts recovered by AI, plus procurement KPIs (open POs, awaiting delivery, spend, average PO cycle time, on-time delivery, stockouts and repairs unblocked by procurement).
+7. **Reset Demo** restores robots, inventory, incidents and purchase orders. Knowledge records are kept.
 
 ## How recommendations work
 
@@ -46,13 +47,16 @@ Every claim carries the record it came from. A test changes the stock levels and
 ## Workflow
 
 ```
-Fault Detected -> Triage -> Inventory Search -> (Knowledge Search -> Awaiting Human Approval) -> Part Reserved
-  -> Technician Dispatched -> Repair in Progress -> Resolved          (or Failed / Needs Attention)
+Fault Detected -> Triage -> Inventory Search -> (Knowledge Search -> Awaiting Human Approval)
+  -> (Procurement Requested -> Awaiting PO Approval -> Awaiting Delivery -> Parts Received)
+  -> Part Reserved -> Technician Dispatched -> Repair in Progress -> Resolved        (or Failed / Needs Attention)
 ```
+
+Procurement starts when neither the failed part nor an approved substitute has free stock, including after the coordinator rejects the last candidate. The Procurement Agent orders the failed part, or its documented successor when the part is obsolete, from the part's vendor at its reorder quantity. Nothing is ordered until a person approves the PO. Receiving adds the stock and reserves a unit for the waiting incident in the same step.
 
 Stages are persisted on the incident and the workflow resumes after a restart. Every agent decision and tool call is written to the event log. Reservations are transactional with one reservation and one work order per incident, so duplicates are prevented. Rejecting a recommendation offers the next candidate, or moves the incident to Failed / Needs Attention when none is left.
 
-Demo-only behavior (the two scenario buttons, the simulated repair confirmation, reset) lives in `server/demo.js` and is applied only to incidents created by the demo buttons. `SPARESPARK_DEMO=off` disables it. Real incidents wait for `POST /api/incidents/:id/confirm-repair`.
+Demo-only behavior (the scenario buttons, the simulated stockout, vendor shipment and repair confirmation, reset) lives in `server/demo.js` and is applied only to incidents created by the demo buttons. `SPARESPARK_DEMO=off` disables it. Real incidents wait for `POST /api/incidents/:id/confirm-repair`.
 
 ## API
 
@@ -70,7 +74,12 @@ All endpoints are JSON under `/api`. Set `SPARESPARK_API_KEY` to require an `X-A
 | GET/POST | `/knowledge` | List or upsert knowledge records (`kb_article`, `work_order`, `tech_note`, `maintenance_history`). |
 | GET/POST | `/robots` | List or upsert robots (e.g. from a CMDB). |
 | GET | `/parts`, `/fault-codes`, `/work-orders`, `/metrics`, `/notifications`, `/events`, `/webhooks` | Reference data, KPIs, pending approvals, logs. |
-| POST | `/demo/happy`, `/demo/hitl`, `/demo/reset` | Demo controls. |
+| GET/POST | `/purchase-orders` | List POs (`?status=`), or create a replenishment PO: `{ part_number, qty }`. |
+| POST | `/purchase-orders/:id/approve`, `/reject` | `{ approver?, comment? }` |
+| POST | `/purchase-orders/:id/ship` | Vendor or ERP shipment notice: `{ tracking_ref? }` |
+| POST | `/purchase-orders/:id/receive` | Goods receipt: `{ qty?, received_by? }` adds stock and resumes the waiting repair. |
+| GET | `/vendors` | Vendors and lead times. |
+| POST | `/demo/happy`, `/demo/hitl`, `/demo/procurement`, `/demo/reset` | Demo controls. |
 
 Webhooks: when `SPARESPARK_WEBHOOK_URL` is set, every stage change on an incident created by an external system is POSTed there as `{ event, sent_at, incident }`, with `X-SpareSpark-Token` and optional basic auth.
 

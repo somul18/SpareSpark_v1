@@ -129,3 +129,53 @@ test('LLM answers that cite unknown sources, parts or percentages are rejected',
   assert.equal(isGrounded('GR-999-X also fits.', r), false);
   assert.equal(isGrounded('GR-220-W2 is a 95% match.', r), false);
 });
+
+test('procurement flow: stockout -> PO approval -> vendor ships -> receive updates inventory -> resolved', async () => {
+  const { db, workflow } = createApp({ dbFile: ':memory:', stepMs: 5, repairMs: 10, vendorMs: 10 });
+  const { incident } = runScenario(workflow, 'procurement');
+  await until(() => workflow.get(incident.id).stage === STAGES.PO_APPROVAL);
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE incident_id = ?').get(incident.id);
+  assert.equal(po.status, 'Pending Approval');
+  assert.equal(po.qty, 2);
+  await wait(50);
+  assert.equal(workflow.get(incident.id).stage, STAGES.PO_APPROVAL, 'waits for the human');
+  assert.throws(() => workflow.receivePo(po.id, {}), /only ordered or shipped/);
+  workflow.approvePo(po.id, { approver: 'R. Diaz' });
+  assert.equal(workflow.get(incident.id).stage, STAGES.DELIVERY);
+  await until(() => workflow.getPo(po.id).status === 'Shipped');
+  assert.equal(workflow.get(incident.id).stage, STAGES.DELIVERY, 'receiving stays a human step');
+  const before = db.prepare("SELECT qty_on_hand FROM parts WHERE part_number = 'SM-400-J3'").get().qty_on_hand;
+  workflow.receivePo(po.id, { received_by: 'Dock 2' });
+  const after = db.prepare("SELECT qty_on_hand, qty_reserved FROM parts WHERE part_number = 'SM-400-J3'").get();
+  assert.equal(after.qty_on_hand, before + 2);
+  assert.equal(after.qty_reserved, 1, 'reserved right after receipt');
+  const done = await until(() => { const i = workflow.get(incident.id); return i.stage === STAGES.RESOLVED && i; });
+  assert.equal(done.selected_part_number, 'SM-400-J3');
+  assert.match(done.latest_action, /procured on PO/);
+  assert.match(db.prepare('SELECT install_instructions FROM work_orders WHERE incident_id = ?').get(incident.id).install_instructions, /encoder calibration/);
+  const m = (await import('../server/app.js')).metrics(db);
+  assert.equal(m.procurement.received, 1);
+  assert.equal(m.procurement.spend, 2 * 1850);
+  assert.equal(m.procurement.repairs_unblocked_by_procurement, 1);
+});
+
+test('repeated happy flows run out of stock and hand over to procurement instead of failing', async () => {
+  const { workflow } = fresh();
+  for (let n = 0; n < 2; n++) {
+    const { incident } = runScenario(workflow, 'happy');
+    await until(() => workflow.get(incident.id).stage === STAGES.RESOLVED);
+  }
+  const { incident } = runScenario(workflow, 'happy');
+  await until(() => workflow.get(incident.id).stage === STAGES.PO_APPROVAL);
+});
+
+test('obsolete part with no stock anywhere orders the documented successor; rejected PO needs attention', async () => {
+  const { db, workflow } = fresh();
+  db.prepare("UPDATE parts SET qty_on_hand = 0 WHERE part_number IN ('GR-220-W2','GR-225-W')").run();
+  const { incident } = runScenario(workflow, 'hitl');
+  await until(() => workflow.get(incident.id).stage === STAGES.PO_APPROVAL);
+  const po = db.prepare('SELECT po.*, p.part_number FROM purchase_orders po JOIN parts p ON p.id = po.part_id WHERE incident_id = ?').get(incident.id);
+  assert.equal(po.part_number, 'GR-220-W2');
+  workflow.rejectPo(po.id, { comment: 'budget' });
+  assert.equal(workflow.get(incident.id).stage, STAGES.FAILED);
+});

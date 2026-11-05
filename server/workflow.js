@@ -17,6 +17,10 @@ export const STAGES = {
   REPAIR: 'Repair in Progress',
   RESOLVED: 'Resolved',
   FAILED: 'Failed / Needs Attention',
+  PROCUREMENT: 'Procurement Requested',
+  PO_APPROVAL: 'Awaiting PO Approval',
+  DELIVERY: 'Awaiting Delivery',
+  RECEIVED: 'Parts Received',
 };
 
 export const STAGE_OWNER = {
@@ -30,10 +34,16 @@ export const STAGE_OWNER = {
   [STAGES.REPAIR]: 'Maintenance Technician',
   [STAGES.RESOLVED]: 'Resolution Agent',
   [STAGES.FAILED]: 'Logistics Parts Coordinator',
+  [STAGES.PROCUREMENT]: 'Procurement Agent',
+  [STAGES.PO_APPROVAL]: 'Procurement Coordinator',
+  [STAGES.DELIVERY]: 'Vendor',
+  [STAGES.RECEIVED]: 'Warehouse Receiving',
 };
 
-const EXACT_PATH = [STAGES.FAULT, STAGES.TRIAGE, STAGES.INVENTORY, STAGES.RESERVED, STAGES.DISPATCHED, STAGES.REPAIR, STAGES.RESOLVED];
-const KNOWLEDGE_PATH = [STAGES.FAULT, STAGES.TRIAGE, STAGES.INVENTORY, STAGES.KNOWLEDGE, STAGES.APPROVAL, STAGES.RESERVED, STAGES.DISPATCHED, STAGES.REPAIR, STAGES.RESOLVED];
+// Stages where the workflow waits for a person or an outside party.
+const WAITING = new Set([STAGES.APPROVAL, STAGES.PO_APPROVAL, STAGES.DELIVERY]);
+const PROCUREMENT_STAGES = new Set([STAGES.PROCUREMENT, STAGES.PO_APPROVAL, STAGES.DELIVERY, STAGES.RECEIVED]);
+
 
 const SLA_MINUTES = Number(process.env.SPARESPARK_SLA_MINUTES || 240);
 
@@ -47,7 +57,7 @@ export class Workflow {
     this.stepMs = stepMs;
     this.onChange = onChange; // (incident, eventName) -> void; used for webhooks
     this.timers = new Map();
-    this.hooks = { afterRepairStarted: [] }; // demo simulator attaches here
+    this.hooks = { afterRepairStarted: [], afterPoOrdered: [] }; // demo simulator attaches here
   }
 
   // ---------- helpers ----------
@@ -177,7 +187,8 @@ export class Workflow {
     this.log(id, 'Spare Parts Agent', 'tool', `knowledge.search(${inc.failed_part_number})`, { searched: rec.sources_searched, relevant: rec.relevant_sources.map((s) => s.ref) });
 
     if (!rec.recommended) {
-      this.setStage(id, STAGES.FAILED, `No in-stock substitute with supporting evidence for ${inc.failed_part_number}. Escalate to procurement.`, { recommendation_json: JSON.stringify(rec), approval_status: 'Not Available' });
+      this.setStage(id, STAGES.KNOWLEDGE, `No in-stock substitute with supporting evidence for ${inc.failed_part_number}. Handing over to the Procurement Agent.`, { recommendation_json: JSON.stringify(rec) });
+      this.schedule(id, () => this.startProcurement(id));
       return;
     }
     const c = rec.recommended;
@@ -220,7 +231,8 @@ export class Workflow {
     const next = recommend(this.db, { part_number: inc.failed_part_number, robot_model: rec.robot_model, component: inc.failed_component });
     applyRejections(next, rejected);
     if (!next.recommended) {
-      this.setStage(id, STAGES.FAILED, `${approver} rejected ${target}; no other in-stock candidate has supporting evidence. Escalate to procurement.`, { recommendation_json: JSON.stringify(next) });
+      this.setStage(id, STAGES.APPROVAL, `${approver} rejected ${target}; no other in-stock candidate has supporting evidence. Handing over to the Procurement Agent.`, { recommendation_json: JSON.stringify(next) });
+      this.startProcurement(id);
       return this.get(id);
     }
     this.setStage(id, STAGES.APPROVAL, `${approver} rejected ${target}. Next candidate: ${next.recommended.part_number} (${next.recommended.match_type}).`, {
@@ -259,7 +271,12 @@ export class Workflow {
     const part = this.db.prepare('SELECT * FROM parts WHERE part_number = ?').get(inc.selected_part_number);
     const rec = inc.recommendation_json ? JSON.parse(inc.recommendation_json) : null;
     const chosen = rec?.recommended?.part_number === part.part_number ? rec.recommended : rec?.candidates?.find((c) => c.part_number === part.part_number);
-    const notes = (chosen?.install_instructions || rec?.install_instructions || []).map((n) => `${n.text} [${n.ref}]`);
+    let installNotes = chosen?.install_instructions || (rec?.recommended ? rec.install_instructions : null);
+    if (!installNotes?.length) {
+      // e.g. a part that arrived on a purchase order: look up its own installation notes.
+      installNotes = recommend(this.db, { part_number: part.part_number, robot_model: robot.model }).install_instructions || [];
+    }
+    const notes = installNotes.map((n) => `${n.text} [${n.ref}]`);
     const instructions = notes.length ? notes.join('\n') : 'Standard replacement procedure.';
     const component = (inc.failed_component || '').toLowerCase();
     const techs = this.db.prepare('SELECT * FROM technicians').all();
@@ -310,7 +327,8 @@ export class Workflow {
     this.log(id, confirmed_by, 'human', success ? 'Repair confirmed successful' : 'Repair failed', { notes });
     if (success) {
       const part = inc.selected_part_number;
-      const label = inc.match_type === MATCH.EXACT ? 'exact part' : `${inc.match_type.toLowerCase()} found in maintenance knowledge`;
+      const po = this.db.prepare("SELECT number FROM purchase_orders WHERE incident_id = ? AND status = 'Received'").get(id);
+      const label = (inc.match_type === MATCH.EXACT ? 'exact part' : `${inc.match_type.toLowerCase()} found in maintenance knowledge`) + (po ? `, procured on ${po.number}` : '');
       this.setStage(id, STAGES.RESOLVED, `Right part dispatched: ${part} (${label}). First-time fix: Yes. SLA: ${slaMet ? 'Met' : 'Breached'}.`, {
         repair_status: 'Completed', first_time_fix: 1, sla_status: slaMet ? 'Met' : 'Breached', resolved_at: resolvedAt.toISOString(),
         resolution_notes: `Replaced ${inc.failed_part_number} with ${part} (${inc.match_type}).${notes ? ` ${notes}` : ''}`,
@@ -319,6 +337,137 @@ export class Workflow {
       this.setStage(id, STAGES.FAILED, `Repair with ${inc.selected_part_number} failed. Needs attention.`, { repair_status: 'Failed', first_time_fix: 0 });
     }
     return this.get(id);
+  }
+
+  // ---------- Procurement Agent ----------
+  // Runs when neither the part nor an approved substitute is in stock. Orders the failed part,
+  // or its documented successor when the failed part is obsolete, and waits for a human to
+  // approve the purchase order and for the parts to be received.
+  startProcurement(id) {
+    const inc = this.get(id);
+    const existing = this.db.prepare("SELECT * FROM purchase_orders WHERE incident_id = ? AND status <> 'Rejected'").get(id);
+    if (existing) {
+      if (existing.status === 'Pending Approval') this.setStage(id, STAGES.PO_APPROVAL, `Waiting on Procurement Coordinator to approve ${existing.number}.`);
+      return existing;
+    }
+    const rec = inc.recommendation_json ? JSON.parse(inc.recommendation_json) : null;
+    const rejected = new Set((rec?.rejected_parts || []).map(canon));
+    const failed = this.db.prepare('SELECT * FROM parts WHERE part_number = ?').get(inc.failed_part_number);
+    let part = null;
+    let matchType = MATCH.EXACT;
+    let why;
+    if (failed && failed.status !== 'Obsolete' && !rejected.has(canon(failed.part_number))) {
+      part = failed;
+      why = `${failed.part_number} is out of stock and no substitute is available.`;
+    } else {
+      const successor = (rec?.candidates || []).find((c) => c.match_type === MATCH.SUPERSESSION && !rejected.has(canon(c.part_number)));
+      if (successor) {
+        part = this.db.prepare('SELECT * FROM parts WHERE part_number = ?').get(successor.part_number);
+        matchType = successor.match_type;
+        why = `${inc.failed_part_number} is obsolete; ordering its documented successor ${successor.part_number} (${successor.evidence.map((e) => e.ref).join(', ')}).`;
+      }
+    }
+    this.log(id, 'Procurement Agent', 'tool', `sourcing.lookup(${inc.failed_part_number})`, part ? { part: part.part_number, vendor_id: part.vendor_id, unit_cost: part.unit_cost, reorder_qty: part.reorder_qty } : { result: 'no orderable part' });
+    if (!part) {
+      this.setStage(id, STAGES.FAILED, `${inc.failed_part_number} is obsolete and has no documented successor to order. Needs engineering review.`);
+      return null;
+    }
+    const vendor = part.vendor_id ? this.db.prepare('SELECT * FROM vendors WHERE id = ?').get(part.vendor_id) : null;
+    if (!vendor) {
+      this.setStage(id, STAGES.FAILED, `No vendor on file for ${part.part_number}. Needs a buyer to source it.`);
+      return null;
+    }
+    const po = this.createPurchaseOrder({ part_number: part.part_number, qty: Math.max(1, part.reorder_qty || 1), incident_id: id, requested_by: 'Procurement Agent', reason: why });
+    this.log(id, 'Procurement Agent', 'decision', `Drafted ${po.number}`, { part: part.part_number, qty: po.qty, vendor: vendor.name, total: po.qty * po.unit_cost, lead_time_days: vendor.lead_time_days });
+    this.setStage(id, STAGES.PROCUREMENT, `${why} Drafted ${po.number}: ${po.qty} x ${part.part_number} from ${vendor.name} (${money(po.qty * po.unit_cost)}, ${vendor.lead_time_days}-day lead time).`, {
+      selected_part_number: part.part_number, match_type: matchType,
+    });
+    this.setStage(id, STAGES.PO_APPROVAL, `Waiting on Procurement Coordinator to approve ${po.number}.`);
+    this.log(id, 'Procurement Agent', 'notification', `Procurement Coordinator alerted: ${po.number} needs approval.`);
+    this.emit(id, 'incident.po_approval_requested');
+    return po;
+  }
+
+  createPurchaseOrder({ part_number, qty, incident_id = null, requested_by = 'Procurement Coordinator', reason = null }) {
+    const part = this.db.prepare('SELECT * FROM parts WHERE part_number = ?').get(String(part_number || '').toUpperCase());
+    if (!part) throw new HttpError(404, `Part ${part_number} not found`);
+    const q = Number(qty || part.reorder_qty || 1);
+    if (!Number.isInteger(q) || q < 1) throw new HttpError(400, 'qty must be a positive integer');
+    return tx(this.db, () => {
+      const number = nextNumber(this.db, 'purchase_order', 'PO', 5001);
+      const { lastInsertRowid } = this.db.prepare(`INSERT INTO purchase_orders(number, incident_id, part_id, vendor_id, qty, unit_cost, status, reason, requested_by, created_at)
+        VALUES (?,?,?,?,?,?, 'Pending Approval', ?,?,?)`).run(number, incident_id, part.id, part.vendor_id ?? null, q, part.unit_cost ?? 0, reason, requested_by, now());
+      return this.getPo(Number(lastInsertRowid));
+    });
+  }
+
+  getPo(poId) {
+    const po = this.db.prepare(`SELECT po.*, p.part_number, p.bin, v.name AS vendor_name, v.lead_time_days, v.contact_email AS vendor_email, i.number AS incident_number
+      FROM purchase_orders po JOIN parts p ON p.id = po.part_id LEFT JOIN vendors v ON v.id = po.vendor_id LEFT JOIN incidents i ON i.id = po.incident_id
+      WHERE po.id = ? OR po.number = ?`).get(Number(poId) || -1, String(poId));
+    if (!po) throw new HttpError(404, `Purchase order ${poId} not found`);
+    return { ...po, total: po.qty * po.unit_cost };
+  }
+
+  approvePo(poId, { approver = 'Procurement Coordinator', comment = null } = {}) {
+    const po = this.getPo(poId);
+    if (po.status !== 'Pending Approval') throw new HttpError(409, `${po.number} is ${po.status}, not awaiting approval`);
+    const at = new Date();
+    const expected = new Date(at.getTime() + (po.lead_time_days || 5) * 86400000).toISOString();
+    this.db.prepare("UPDATE purchase_orders SET status = 'Ordered', approved_by = ?, approval_comment = ?, approved_at = ?, expected_at = ? WHERE id = ?")
+      .run(approver, comment, at.toISOString(), expected, po.id);
+    if (po.incident_id) {
+      this.log(po.incident_id, approver, 'human', `Approved ${po.number}${comment ? `: ${comment}` : ''}`);
+      this.setStage(po.incident_id, STAGES.DELIVERY, `${approver} approved ${po.number}. Sent to ${po.vendor_name}; expected by ${expected.slice(0, 10)}.`);
+    }
+    const updated = this.getPo(po.id);
+    for (const hook of this.hooks.afterPoOrdered) hook(updated);
+    return updated;
+  }
+
+  rejectPo(poId, { approver = 'Procurement Coordinator', comment = null } = {}) {
+    const po = this.getPo(poId);
+    if (po.status !== 'Pending Approval') throw new HttpError(409, `${po.number} is ${po.status}, not awaiting approval`);
+    this.db.prepare("UPDATE purchase_orders SET status = 'Rejected', approved_by = ?, approval_comment = ?, approved_at = ? WHERE id = ?").run(approver, comment, now(), po.id);
+    if (po.incident_id) {
+      this.log(po.incident_id, approver, 'human', `Rejected ${po.number}${comment ? `: ${comment}` : ''}`);
+      this.setStage(po.incident_id, STAGES.FAILED, `${approver} rejected ${po.number}. Needs attention.`);
+    }
+    return this.getPo(po.id);
+  }
+
+  // Vendor or ERP reports the shipment.
+  shipPo(poId, { tracking_ref = null, actor = 'Vendor' } = {}) {
+    const po = this.getPo(poId);
+    if (po.status !== 'Ordered') throw new HttpError(409, `${po.number} is ${po.status}, not ordered`);
+    this.db.prepare("UPDATE purchase_orders SET status = 'Shipped', shipped_at = ?, tracking_ref = ? WHERE id = ?").run(now(), tracking_ref, po.id);
+    if (po.incident_id) {
+      this.log(po.incident_id, actor, 'tool', `purchase_order.shipped(${po.number})`, { tracking_ref });
+      this.setStage(po.incident_id, STAGES.DELIVERY, `${po.vendor_name} shipped ${po.number}${tracking_ref ? ` (tracking ${tracking_ref})` : ''}. Waiting for goods receipt.`);
+    }
+    return this.getPo(po.id);
+  }
+
+  // Goods receipt: adds stock, then resumes the repair for the incident that needed it.
+  receivePo(poId, { qty = null, received_by = 'Warehouse Receiving' } = {}) {
+    const po = this.getPo(poId);
+    if (!['Ordered', 'Shipped'].includes(po.status)) throw new HttpError(409, `${po.number} is ${po.status}; only ordered or shipped orders can be received`);
+    const q = qty === null || qty === undefined || qty === '' ? po.qty : Number(qty);
+    if (!Number.isInteger(q) || q < 1 || q > po.qty) throw new HttpError(400, `Received quantity must be between 1 and ${po.qty}`);
+    tx(this.db, () => {
+      this.db.prepare("UPDATE purchase_orders SET status = 'Received', received_qty = ?, received_by = ?, received_at = ? WHERE id = ?").run(q, received_by, now(), po.id);
+      this.db.prepare('UPDATE parts SET qty_on_hand = qty_on_hand + ? WHERE id = ?').run(q, po.part_id);
+    });
+    const part = this.db.prepare('SELECT * FROM parts WHERE id = ?').get(po.part_id);
+    if (po.incident_id) {
+      const inc = this.get(po.incident_id);
+      this.log(po.incident_id, received_by, 'human', `Received ${q} x ${po.part_number} on ${po.number}`);
+      if (inc.stage === STAGES.DELIVERY) {
+        this.setStage(po.incident_id, STAGES.RECEIVED, `Received ${q} x ${po.part_number} into bin ${part.bin}. Inventory updated (${part.qty_on_hand} on hand). Resuming repair.`);
+        this.reserveAndContinue(po.incident_id);
+      }
+    }
+    return this.getPo(po.id);
   }
 
   // ---------- Coordinator chat with the Spare Parts Agent ----------
@@ -349,12 +498,14 @@ export class Workflow {
 
   // Resume in-flight workflows after a restart.
   resumeAll() {
-    const open = this.db.prepare('SELECT id, stage FROM incidents WHERE stage NOT IN (?,?,?,?)').all(STAGES.RESOLVED, STAGES.FAILED, STAGES.APPROVAL, STAGES.REPAIR);
+    const open = this.db.prepare('SELECT id, stage FROM incidents WHERE stage NOT IN (?,?,?,?,?,?)').all(STAGES.RESOLVED, STAGES.FAILED, STAGES.APPROVAL, STAGES.REPAIR, STAGES.PO_APPROVAL, STAGES.DELIVERY);
     const next = {
       [STAGES.FAULT]: (id) => this.runTriage(id),
       [STAGES.TRIAGE]: (id) => this.runInventorySearch(id),
       [STAGES.INVENTORY]: (id) => (this.get(id).selected_part_number ? this.reserveAndContinue(id) : this.runKnowledgeSearch(id)),
       [STAGES.KNOWLEDGE]: (id) => this.runKnowledgeSearch(id),
+      [STAGES.PROCUREMENT]: (id) => this.startProcurement(id),
+      [STAGES.RECEIVED]: (id) => this.reserveAndContinue(id),
       [STAGES.RESERVED]: (id) => this.dispatch(id),
       [STAGES.DISPATCHED]: (id) => this.startRepair(id),
     };
@@ -366,9 +517,15 @@ export class Workflow {
   }
 
   stagePath(inc) {
-    const knowledge = (inc.match_type && inc.match_type !== MATCH.EXACT) || inc.demo_scenario === 'hitl'
-      || [STAGES.KNOWLEDGE, STAGES.APPROVAL].includes(inc.stage);
-    const path = knowledge ? KNOWLEDGE_PATH : EXACT_PATH;
+    const procurement = inc.demo_scenario === 'procurement' || PROCUREMENT_STAGES.has(inc.stage)
+      || !!this.db.prepare('SELECT 1 FROM purchase_orders WHERE incident_id = ?').get(inc.id);
+    const approval = inc.demo_scenario === 'hitl' || ['Pending', 'Approved', 'Rejected'].includes(inc.approval_status) || inc.stage === STAGES.APPROVAL;
+    const knowledge = procurement || approval || (inc.match_type && inc.match_type !== MATCH.EXACT) || inc.stage === STAGES.KNOWLEDGE;
+    const path = [STAGES.FAULT, STAGES.TRIAGE, STAGES.INVENTORY];
+    if (knowledge) path.push(STAGES.KNOWLEDGE);
+    if (approval) path.push(STAGES.APPROVAL);
+    if (procurement) path.push(STAGES.PROCUREMENT, STAGES.PO_APPROVAL, STAGES.DELIVERY, STAGES.RECEIVED);
+    path.push(STAGES.RESERVED, STAGES.DISPATCHED, STAGES.REPAIR, STAGES.RESOLVED);
     const idx = path.indexOf(inc.stage);
     return path.map((stage, i) => ({
       stage,
@@ -376,11 +533,13 @@ export class Workflow {
       status: inc.stage === STAGES.FAILED ? (i === 0 ? 'done' : 'pending')
         : inc.stage === STAGES.RESOLVED ? 'done'
           : i < idx ? 'done'
-            : i === idx ? (stage === STAGES.APPROVAL ? 'waiting' : stage === STAGES.REPAIR ? 'in_progress' : 'done')
-              : i === idx + 1 && inc.stage !== STAGES.APPROVAL && inc.stage !== STAGES.REPAIR ? 'in_progress' : 'pending',
+            : i === idx ? (WAITING.has(stage) ? 'waiting' : stage === STAGES.REPAIR ? 'in_progress' : 'done')
+              : i === idx + 1 && !WAITING.has(inc.stage) && inc.stage !== STAGES.REPAIR ? 'in_progress' : 'pending',
     }));
   }
 }
+
+const money = (n) => `$${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 
 function applyRejections(rec, rejected) {
   if (!rejected?.length) return rec;

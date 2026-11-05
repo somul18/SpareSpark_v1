@@ -18,6 +18,7 @@
       <button class="tab" data-view="coordinator">Coordinator <span id="alertBadge" class="badge-count" hidden>0</span></button>
       <button class="tab" data-view="dashboard">Dashboard</button>
       <button class="tab" data-view="knowledge">Knowledge &amp; Inventory</button>
+      <button class="tab" data-view="procurement">Procurement <span id="poBadge" class="badge-count" hidden>0</span></button>
       <button class="tab" data-view="integration">Integrations</button>
     </nav>
     <div class="mode" id="modeLabel" title="How recommendations are produced"></div>
@@ -30,6 +31,7 @@
       <div class="actions" id="demoActions">
         <button class="btn primary" id="btnHappy">▶ Run Happy Flow <small>AdamNow</small></button>
         <button class="btn accent" id="btnHitl">▶ Run Human-in-the-Loop Flow <small>EveThen</small></button>
+        <button class="btn proc" id="btnProc">▶ Run Procurement Flow <small>AdamNow stockout</small></button>
         <button class="btn ghost" id="btnReset">Reset Demo</button>
       </div>
       <div class="robots" id="robots"></div>
@@ -55,6 +57,8 @@
     <!-- Dashboard -->
     <section id="view-dashboard" class="view">
       <div class="kpi-big" id="dashKpis"></div>
+      <h2 class="section-title">Procurement</h2>
+      <div class="kpis" id="dashProcKpis"></div>
       <h2 class="section-title">Work orders</h2>
       <div class="table-wrap"><table class="grid" id="woTable"></table></div>
     </section>
@@ -79,6 +83,34 @@
           <div id="kbList"></div>
         </div>
       </div>
+    </section>
+
+    <!-- Procurement -->
+    <section id="view-procurement" class="view">
+      <div class="kpis" id="procKpis"></div>
+      <div class="two-col" style="margin-top:18px">
+        <div>
+          <h2 class="section-title" style="margin-top:0">Waiting on you</h2>
+          <div id="poQueue"></div>
+        </div>
+        <div>
+          <h2 class="section-title" style="margin-top:0">How parts come in</h2>
+          <ol class="flow-steps">
+            <li><b>Procurement Agent drafts a PO</b> when neither the part nor an approved substitute is in stock. It orders the failed part, or its documented successor if the part is obsolete, from the vendor on file at the reorder quantity.</li>
+            <li><b>Procurement Coordinator approves</b> the PO. The repair stays paused until then.</li>
+            <li><b>Vendor ships.</b> The vendor or ERP reports the shipment with a tracking number (<code>POST /api/purchase-orders/:id/ship</code>). In the demo this is simulated a few seconds after approval.</li>
+            <li><b>Warehouse receives</b> the goods: click <b>Receive</b> and confirm the quantity. Stock is added to the part's bin, one unit is reserved for the waiting incident, and the Resolution Agent dispatches the technician.</li>
+          </ol>
+          <h2 class="section-title">Replenish stock</h2>
+          <form id="poForm" class="inline-form">
+            <select name="part_number" id="poPart" required></select>
+            <input name="qty" type="number" min="1" value="1" style="max-width:90px" required>
+            <button class="btn primary" type="submit">Create PO</button>
+          </form>
+        </div>
+      </div>
+      <h2 class="section-title">Purchase orders</h2>
+      <div class="table-wrap"><table class="grid" id="poTable"></table></div>
     </section>
 
     <!-- Integrations -->

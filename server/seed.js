@@ -68,6 +68,32 @@ export const SYNONYMS = [
   ['paint atomizer nozzle', ['atomizer', 'nozzle']],
 ];
 
+export const VENDORS = [
+  { name: 'Apex Robotics Supply', contact_email: 'orders@apex-robotics.example', lead_time_days: 3 },
+  { name: 'Meridian Motion Parts', contact_email: 'po@meridian-motion.example', lead_time_days: 5 },
+  { name: 'Northline Industrial', contact_email: 'sales@northline.example', lead_time_days: 7 },
+];
+
+// part_number -> [vendor, unit cost, reorder quantity]
+export const PART_SOURCING = {
+  'SM-400-J3': ['Apex Robotics Supply', 1850, 2],
+  'SM-380-J3': ['Apex Robotics Supply', 1500, 1],
+  'GR-220-W': ['Meridian Motion Parts', 2200, 1],
+  'GR-220-W2': ['Meridian Motion Parts', 2400, 2],
+  'GR-225-W': ['Meridian Motion Parts', 2950, 1],
+  'GR-230-W': ['Meridian Motion Parts', 2600, 1],
+  'VP-90-G': ['Northline Industrial', 420, 2],
+  'AN-14-C': ['Northline Industrial', 65, 10],
+};
+
+export function seedProcurement(db) {
+  const insV = db.prepare('INSERT OR IGNORE INTO vendors(name, contact_email, lead_time_days) VALUES (?,?,?)');
+  for (const v of VENDORS) insV.run(v.name, v.contact_email, v.lead_time_days);
+  const up = db.prepare(`UPDATE parts SET vendor_id = COALESCE(vendor_id, (SELECT id FROM vendors WHERE name = ?)),
+    unit_cost = COALESCE(unit_cost, ?), reorder_qty = CASE WHEN vendor_id IS NULL THEN ? ELSE reorder_qty END WHERE part_number = ?`);
+  for (const [pn, [vendor, cost, qty]] of Object.entries(PART_SOURCING)) up.run(vendor, cost, qty, pn);
+}
+
 export const TECHNICIANS = [
   { name: 'M. Ortiz', skills: 'robotics,welding,servo,gearbox', location: 'Plant 1' },
   { name: 'A. Chen', skills: 'robotics,pneumatics,paint', location: 'Plant 1' },
@@ -108,4 +134,5 @@ export function seedOperational(db) {
 export function seed(db) {
   seedReference(db);
   seedOperational(db);
+  seedProcurement(db);
 }

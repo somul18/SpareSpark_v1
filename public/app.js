@@ -4,7 +4,10 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const pct = (v) => (v === null || v === undefined ? '–' : `${Math.round(v * 100)}%`);
 const time = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
 
-const state = { view: 'console', config: {}, robots: [], incidents: [], metrics: {}, alerts: [], selected: null, popup: null, kbFilter: '' };
+const state = { view: 'console', config: {}, robots: [], incidents: [], metrics: {}, alerts: [], pos: [], selected: null, popup: null, kbFilter: '' };
+const money = (n) => `$${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+const dur = (sec) => (sec === null || sec === undefined ? '–' : sec < 90 ? `${Math.round(sec)} s` : sec < 5400 ? `${Math.round(sec / 60)} min` : sec < 172800 ? `${(sec / 3600).toFixed(1)} h` : `${(sec / 86400).toFixed(1)} d`);
+const WAITING_STAGES = new Set(['Awaiting Human Approval', 'Awaiting PO Approval', 'Awaiting Delivery']);
 
 // ---------- API ----------
 function apiKey() { try { return localStorage.getItem('sparespark.apiKey') || ''; } catch { return ''; } }
@@ -31,7 +34,7 @@ function setHtml(el, html) { if (el && el.__html !== html) { el.innerHTML = html
 const ROBOT_TONE = { Operational: 'ok', Restored: 'ok', Fault: 'bad', 'Under Repair': 'warn' };
 const robotPill = (s) => `<span class="pill ${ROBOT_TONE[s] || 'muted'}">${esc(s.toUpperCase())}</span>`;
 function stagePill(stage) {
-  const tone = stage === 'Resolved' ? 'ok' : stage === 'Awaiting Human Approval' ? 'warn' : stage?.startsWith('Failed') ? 'bad' : 'info';
+  const tone = stage === 'Resolved' ? 'ok' : WAITING_STAGES.has(stage) ? 'warn' : stage?.startsWith('Failed') ? 'bad' : 'info';
   return `<span class="pill ${tone}">${esc(stage === 'Awaiting Human Approval' ? 'Waiting on human' : stage)}</span>`;
 }
 const MATCH_TONE = { Exact: 'ok', 'Documented Supersession': 'info', 'Potential Alternative': 'warn', 'Insufficient Evidence': 'bad' };
@@ -50,13 +53,14 @@ function renderConsole() {
   ].map(([l, v]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div></div>`).join(''));
 
   setHtml($('#robots'), state.robots.map((r) => {
-    const waiting = r.incident_stage === 'Awaiting Human Approval';
+    const waiting = WAITING_STAGES.has(r.incident_stage);
+    const waitText = { 'Awaiting Human Approval': 'Waiting on Logistics Coordinator', 'Awaiting PO Approval': 'Waiting on Procurement approval', 'Awaiting Delivery': 'Waiting on vendor delivery' }[r.incident_stage];
     const cls = r.status === 'Fault' ? (waiting ? 'waiting' : 'fault') : '';
     const inc = r.incident_number ? `
       <div class="row"><span class="meta">${esc(r.incident_number)}</span>${stagePill(r.incident_stage)}</div>
       ${r.selected_part_number ? `<div class="row"><span class="meta">Part: <b>${esc(r.selected_part_number)}</b></span>${r.match_type && r.match_type !== 'Exact' ? '<span class="pill info">AI-found part</span>' : ''}</div>` : ''}
       ${r.incident_stage === 'Resolved' ? `<div class="row"><span class="pill ${r.first_time_fix ? 'ok' : 'bad'}">FTF ${r.first_time_fix ? '✓' : '✗'}</span>${r.sla_status ? `<span class="pill ${r.sla_status === 'Met' ? 'ok' : 'bad'}">SLA ${r.sla_status === 'Met' ? '✓' : '✗'}</span>` : ''}</div>` : ''}
-      ${waiting ? '<div class="row"><span class="pill warn">Waiting on Logistics Coordinator</span></div>' : ''}` : '';
+      ${waiting ? `<div class="row"><span class="pill warn">${waitText}</span></div>` : ''}` : '';
     return `<div class="robot ${cls} ${r.current_incident_id ? 'clickable' : ''}" data-incident="${r.current_incident_id || ''}">
       <div class="row" style="justify-content:space-between"><div class="icon">${ROBOT_ICON}</div>${robotPill(r.status)}</div>
       <div class="name">${esc(r.name)}</div>
@@ -80,6 +84,51 @@ function renderDashboard() {
     ['SLA attainment', pct(m.sla_attainment), 'Resolved within SLA'],
     ['Parts recovered by AI', m.parts_recovered_by_ai ?? 0, 'Substitutes found in maintenance knowledge, not inventory'],
   ].map(([l, v, h]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div><div class="hint">${esc(h)}</div></div>`).join(''));
+  setHtml($('#dashProcKpis'), procKpiHtml(m.procurement || {}));
+}
+
+function procKpiHtml(p) {
+  return [
+    ['Open purchase orders', p.open_purchase_orders ?? 0, `${p.awaiting_approval || 0} awaiting approval`],
+    ['Awaiting delivery', p.awaiting_delivery ?? 0, `${money(p.on_order_value)} on order`],
+    ['Procurement spend', money(p.spend), `${p.received || 0} orders received`],
+    ['Avg PO cycle time', dur(p.avg_cycle_seconds), 'Created to received'],
+    ['On-time delivery', pct(p.on_time_delivery_rate), 'Received by expected date'],
+    ['Stockouts', p.stockout_incidents ?? 0, `${p.repairs_unblocked_by_procurement || 0} repairs unblocked by procurement`],
+  ].map(([l, v, h]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${esc(v)}</div><div class="hint">${esc(h)}</div></div>`).join('');
+}
+
+const PO_TONE = { 'Pending Approval': 'warn', Ordered: 'info', Shipped: 'info', Received: 'ok', Rejected: 'bad' };
+function poActions(po) {
+  if (po.status === 'Pending Approval') return `<button class="btn ok sm" data-po-approve="${po.id}">Approve</button><button class="btn danger sm" data-po-reject="${po.id}">Reject</button>`;
+  if (po.status === 'Ordered' || po.status === 'Shipped') {
+    return `${po.status === 'Ordered' ? `<button class="btn sm" data-po-ship="${po.id}" title="Record the vendor's shipment notice">Mark shipped</button>` : ''}
+      <label><small>Qty</small> <input type="number" min="1" max="${po.qty}" value="${po.qty}" data-po-qty="${po.id}"></label>
+      <button class="btn ok sm" data-po-receive="${po.id}">Receive</button>`;
+  }
+  return '';
+}
+function renderProcurement() {
+  const pending = state.pos.filter((p) => p.status === 'Pending Approval').length;
+  const badge = $('#poBadge');
+  badge.hidden = !pending; badge.textContent = pending;
+  if (state.view !== 'procurement') return;
+  setHtml($('#procKpis'), procKpiHtml(state.metrics.procurement || {}));
+  const queue = state.pos.filter((p) => ['Pending Approval', 'Ordered', 'Shipped'].includes(p.status));
+  setHtml($('#poQueue'), queue.length ? queue.map((po) => `<div class="po-card ${po.status === 'Pending Approval' ? '' : 'ship'}">
+      <div class="po-head"><span class="po-num">${esc(po.number)}</span><span class="pill ${PO_TONE[po.status]}">${esc(po.status)}</span>
+        ${po.incident_number ? `<span class="pill muted">for ${esc(po.incident_number)}</span>` : '<span class="pill muted">replenishment</span>'}</div>
+      <div style="margin-top:6px"><b>${po.qty} x ${esc(po.part_number)}</b> from ${esc(po.vendor_name || 'no vendor')} · ${money(po.total)}</div>
+      <div class="po-body">${esc(po.reason || '')}${po.expected_at ? ` Expected ${esc(po.expected_at.slice(0, 10))}.` : ''}${po.tracking_ref ? ` Tracking ${esc(po.tracking_ref)}.` : ''}
+        ${po.status === 'Shipped' ? ' Goods are on the way: receive them when they arrive at the dock.' : po.status === 'Ordered' ? ' Waiting for the vendor to ship.' : ''}</div>
+      <div class="po-actions">${poActions(po)}</div></div>`).join('')
+    : '<div class="empty">Nothing to approve or receive.</div>');
+  setHtml($('#poTable'), '<tr><th>PO</th><th>Status</th><th>Part</th><th class="num">Qty</th><th>Vendor</th><th class="num">Total</th><th>Incident</th><th>Created</th><th>Expected</th><th>Received</th><th></th></tr>' +
+    (state.pos.length ? state.pos.map((po) => `<tr><td><b>${esc(po.number)}</b></td><td><span class="pill ${PO_TONE[po.status]}">${esc(po.status)}</span></td>
+      <td>${esc(po.part_number)}</td><td class="num">${po.received_qty ?? po.qty}</td><td>${esc(po.vendor_name || '')}</td><td class="num">${money(po.total)}</td>
+      <td>${esc(po.incident_number || '–')}</td><td>${time(po.created_at)}</td><td>${esc(po.expected_at?.slice(0, 10) || '')}</td>
+      <td>${po.received_at ? `${time(po.received_at)} <small>${esc(po.received_by || '')}</small>` : ''}</td><td style="white-space:nowrap">${po.status === 'Pending Approval' ? poActions(po) : ''}</td></tr>`).join('')
+      : '<tr><td colspan="11"><small>No purchase orders yet. Run the procurement flow, or run the happy flow until SM-400-J3 runs out.</small></td></tr>'));
 }
 
 async function loadWorkOrders() {
@@ -170,9 +219,9 @@ async function onChat(e) {
 // ---------- knowledge ----------
 async function renderKnowledge() {
   const [parts, kb] = await Promise.all([api('/parts'), api('/knowledge')]);
-  setHtml($('#partsTable'), '<tr><th>Part</th><th>Description</th><th>Models</th><th class="num">On hand</th><th class="num">Reserved</th><th>Bin</th><th>Status</th><th>Superseded by</th></tr>' +
+  setHtml($('#partsTable'), '<tr><th>Part</th><th>Description</th><th>Models</th><th class="num">On hand</th><th class="num">Reserved</th><th class="num">On order</th><th>Bin</th><th>Status</th><th>Vendor</th></tr>' +
     parts.map((p) => `<tr><td><b>${esc(p.part_number)}</b></td><td>${esc(p.description)}</td><td>${esc(p.compatible_models)}</td><td class="num">${p.qty_on_hand}</td><td class="num">${p.qty_reserved}</td>
-      <td>${esc(p.bin)}</td><td><span class="pill ${p.status === 'Active' ? 'ok' : p.status === 'Obsolete' ? 'bad' : 'warn'}">${esc(p.status)}</span></td><td>${esc(p.superseded_by || '–')}</td></tr>`).join(''));
+      <td class="num">${p.on_order || ''}</td><td>${esc(p.bin)}</td><td><span class="pill ${p.status === 'Active' ? 'ok' : p.status === 'Obsolete' ? 'bad' : 'warn'}">${esc(p.status)}</span></td><td><small>${esc(p.vendor_name || '–')}${p.unit_cost ? ` · ${money(p.unit_cost)}` : ''}</small></td></tr>`).join(''));
   const f = state.kbFilter.toLowerCase();
   const LABEL = { kb_article: 'KB article', work_order: 'Work order', tech_note: 'Tech note', maintenance_history: 'Maint. history' };
   setHtml($('#kbList'), kb.filter((k) => !f || `${k.ref} ${k.title} ${k.body}`.toLowerCase().includes(f)).map((k) => `<div class="kb">
@@ -206,7 +255,8 @@ async function renderIntegration() {
 // ---------- workflow popup ----------
 const STEP_LABEL = {
   'Fault Detected': 'Malfunction detected', Triage: 'Failed part identified', 'Inventory Search': 'Inventory searched', 'Knowledge Search': 'Maintenance knowledge searched',
-  'Awaiting Human Approval': 'Human approval', 'Part Reserved': 'Part reserved', 'Technician Dispatched': 'Technician dispatched', 'Repair in Progress': 'Repair in progress', Resolved: 'Ticket resolved',
+  'Awaiting Human Approval': 'Human approval', 'Procurement Requested': 'Procurement Agent drafted PO', 'Awaiting PO Approval': 'PO approval (human)',
+  'Awaiting Delivery': 'Vendor delivery', 'Parts Received': 'Parts received', 'Part Reserved': 'Part reserved', 'Technician Dispatched': 'Technician dispatched', 'Repair in Progress': 'Repair in progress', Resolved: 'Ticket resolved',
 };
 function openPopup(id) {
   state.popup = id;
@@ -220,18 +270,19 @@ async function renderPopup() {
   const lastStageMsg = {};
   for (const e of inc.events) if (e.kind === 'stage') lastStageMsg[e.message.split(':')[0]] = e.message.slice(e.message.indexOf(':') + 1).trim();
   setHtml($('#wfTitle'), `Workflow: ${esc(inc.robot.name)} · ${esc(inc.number)}`);
-  setHtml($('#wfSub'), `${inc.demo_scenario === 'hitl' ? 'Human-in-the-loop flow' : inc.demo_scenario === 'happy' ? 'Happy flow' : 'Live incident'} · fault ${esc(inc.fault_code)}`);
+  setHtml($('#wfSub'), `${{ hitl: 'Human-in-the-loop flow', happy: 'Happy flow', procurement: 'Procurement flow' }[inc.demo_scenario] || 'Live incident'} · fault ${esc(inc.fault_code)}`);
   const failed = inc.stage.startsWith('Failed');
   setHtml($('#wfSteps'), inc.progress.map((s, i) => {
     let status = s.status;
     if (failed && i === inc.progress.findIndex((p) => p.status !== 'done')) status = 'failed';
-    const mark = status === 'done' ? '✓' : status === 'waiting' ? 'H' : status === 'failed' ? '!' : i + 1;
+    const mark = status === 'done' ? '✓' : status === 'waiting' ? (s.stage === 'Awaiting Delivery' ? '⏳' : 'H') : status === 'failed' ? '!' : i + 1;
     const det = status === 'waiting' ? inc.latest_action : lastStageMsg[s.stage] || '';
     return `<li class="step ${status}"><span class="dot">${mark}</span><div><div class="lbl">${esc(STEP_LABEL[s.stage] || s.stage)}</div>${det ? `<div class="det">${esc(det)}</div>` : ''}</div><span class="owner">${esc(s.owner)}</span></li>`;
   }).join('') + (failed ? `<li class="step failed"><span class="dot">!</span><div><div class="lbl">Needs attention</div><div class="det">${esc(inc.latest_action)}</div></div><span class="owner">${esc(inc.stage_owner)}</span></li>` : ''));
   const resolved = inc.stage === 'Resolved';
   setHtml($('#wfFoot'), `<div class="summary">${resolved ? `<span class="pill ok">First-time fix: ${inc.first_time_fix ? 'YES' : 'NO'}</span><span class="pill ${inc.sla_status === 'Met' ? 'ok' : 'bad'}">SLA: ${esc(inc.sla_status?.toUpperCase())}</span><span class="pill info">${esc(inc.selected_part_number)}</span>` : ''}</div>
     ${inc.stage === 'Awaiting Human Approval' ? '<button class="btn accent" data-goto-coord>Open coordinator view</button>' : ''}
+    ${['Awaiting PO Approval', 'Awaiting Delivery'].includes(inc.stage) && inc.purchase_order ? `<span class="pill warn">${esc(inc.purchase_order.number)}: ${esc(inc.purchase_order.status)}</span>${poActions(inc.purchase_order)}<button class="btn" data-view-po>Open procurement</button>` : ''}
     <button class="btn" id="wfClose2">Close</button>`);
 }
 function closePopup() { state.popup = null; $('#workflowDialog').close(); }
@@ -239,9 +290,9 @@ function closePopup() { state.popup = null; $('#workflowDialog').close(); }
 // ---------- polling ----------
 async function refresh() {
   try {
-    const [robots, incidents, metrics, alerts] = await Promise.all([api('/robots'), api('/incidents'), api('/metrics'), api('/notifications')]);
-    Object.assign(state, { robots, incidents, metrics, alerts });
-    renderConsole(); renderDashboard(); renderCoordinatorLists();
+    const [robots, incidents, metrics, alerts, pos] = await Promise.all([api('/robots'), api('/incidents'), api('/metrics'), api('/notifications'), api('/purchase-orders')]);
+    Object.assign(state, { robots, incidents, metrics, alerts, pos });
+    renderConsole(); renderDashboard(); renderCoordinatorLists(); renderProcurement();
     if (state.view === 'coordinator') await renderCoordinatorMain();
     if (state.view === 'dashboard') await loadWorkOrders();
     if (state.view === 'integration') await renderIntegration();
@@ -254,6 +305,7 @@ function showView(view) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === view));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
   if (view === 'knowledge') renderKnowledge();
+  if (view === 'procurement') loadPoParts();
   refresh();
 }
 
@@ -272,11 +324,12 @@ async function runDemo(name) {
 }
 
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-view],[data-incident],[data-select],[data-approve],[data-reject],[data-goto-coord],[data-confirm-repair],#wfClose,#wfClose2');
+  const t = e.target.closest('[data-view],[data-incident],[data-select],[data-approve],[data-reject],[data-goto-coord],[data-confirm-repair],[data-po-approve],[data-po-reject],[data-po-ship],[data-po-receive],[data-view-po],#wfClose,#wfClose2');
   if (!t) return;
   if (t.dataset.view) return showView(t.dataset.view);
   if (t.id === 'wfClose' || t.id === 'wfClose2') return closePopup();
   if (t.hasAttribute('data-goto-coord')) { const id = state.popup; closePopup(); return selectIncident(id); }
+  if (t.hasAttribute('data-view-po')) { closePopup(); return showView('procurement'); }
   if (t.dataset.select) return selectIncident(t.dataset.select);
   if (t.dataset.incident) return openPopup(Number(t.dataset.incident));
   try {
@@ -288,6 +341,21 @@ document.addEventListener('click', async (e) => {
     } else if (t.dataset.reject) {
       const comment = prompt(`Why reject ${t.dataset.reject}? (optional)`) ?? null;
       await api(`/incidents/${state.selected}/reject`, { method: 'POST', body: { part_number: t.dataset.reject, approver: 'S. Patel (Logistics)', comment } });
+    } else if (t.dataset.poApprove) {
+      t.disabled = true;
+      const po = await api(`/purchase-orders/${t.dataset.poApprove}/approve`, { method: 'POST', body: { approver: 'R. Diaz (Procurement)' } });
+      toast(`${po.number} approved and sent to ${po.vendor_name}.`);
+    } else if (t.dataset.poReject) {
+      const comment = prompt('Why reject this purchase order? (optional)') ?? null;
+      await api(`/purchase-orders/${t.dataset.poReject}/reject`, { method: 'POST', body: { approver: 'R. Diaz (Procurement)', comment } });
+    } else if (t.dataset.poShip) {
+      const tracking = prompt('Vendor tracking number (optional)') || null;
+      await api(`/purchase-orders/${t.dataset.poShip}/ship`, { method: 'POST', body: { tracking_ref: tracking, actor: 'Vendor (recorded manually)' } });
+    } else if (t.dataset.poReceive) {
+      t.disabled = true;
+      const qtyInput = document.querySelector(`[data-po-qty="${t.dataset.poReceive}"]`);
+      const po = await api(`/purchase-orders/${t.dataset.poReceive}/receive`, { method: 'POST', body: { qty: qtyInput ? Number(qtyInput.value) : null, received_by: 'Dock 2 (Warehouse)' } });
+      toast(`Received ${po.received_qty} x ${po.part_number}. Inventory updated${po.incident_number ? `; ${po.incident_number} resumed` : ''}.`);
     } else if (t.hasAttribute('data-confirm-repair')) {
       await api(`/incidents/${state.selected}/confirm-repair`, { method: 'POST', body: { success: true, confirmed_by: 'Maintenance Technician' } });
     }
@@ -297,6 +365,24 @@ document.addEventListener('click', async (e) => {
 
 $('#btnHappy').addEventListener('click', () => runDemo('happy'));
 $('#btnHitl').addEventListener('click', () => runDemo('hitl'));
+$('#btnProc').addEventListener('click', () => runDemo('procurement'));
+async function loadPoParts() {
+  const sel = $('#poPart');
+  if (sel.options.length) return;
+  try {
+    const parts = await api('/parts');
+    sel.innerHTML = parts.map((p) => `<option value="${esc(p.part_number)}">${esc(p.part_number)} (${p.available} free${p.vendor_name ? `, ${esc(p.vendor_name)}` : ''})</option>`).join('');
+  } catch (err) { toast(err.message); }
+}
+$('#poForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  try {
+    const po = await api('/purchase-orders', { method: 'POST', body: { part_number: fd.get('part_number'), qty: Number(fd.get('qty')), requested_by: 'R. Diaz (Procurement)', reason: 'Stock replenishment' } });
+    toast(`${po.number} created. Approve it to send it to ${po.vendor_name}.`);
+    refresh();
+  } catch (err) { toast(err.message); }
+});
 $('#btnReset').addEventListener('click', async () => {
   if (!confirm('Reset robots, inventory and incidents to the starting state? Knowledge records are kept.')) return;
   try { await api('/demo/reset', { method: 'POST' }); closePopup(); state.selected = null; $("#coordMain").dataset.loaded = ""; $('#coordMain').innerHTML = '<div class="empty">No incident selected.</div>'; toast('Demo reset'); refresh(); }

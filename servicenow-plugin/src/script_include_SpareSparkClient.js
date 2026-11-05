@@ -199,6 +199,12 @@ SpareSparkClient.prototype = {
       lines.push('');
       lines.push('Use "SpareSpark: Approve part" or "SpareSpark: Reject part" on this incident, or approve in the SpareSpark coordinator view.');
     }
+    var po = ss.purchase_order;
+    if (po && (ss.stage === 'Awaiting PO Approval' || ss.stage === 'Awaiting Delivery' || ss.stage === 'Parts Received')) {
+      lines.push('Purchase order ' + po.number + ': ' + po.qty + ' x ' + po.part_number + ' from ' + (po.vendor_name || 'vendor') +
+        ', status ' + po.status + (po.expected_at ? ', expected ' + String(po.expected_at).slice(0, 10) : '') + '.');
+      if (ss.stage === 'Awaiting PO Approval') lines.push('Approve or reject it in the SpareSpark Procurement tab.');
+    }
     if (ss.work_order && ss.stage === 'Technician Dispatched') {
       lines.push('Work order ' + ss.work_order.number + ': ' + ss.work_order.part_number + ' from bin ' + ss.work_order.bin + ' to ' + ss.work_order.location + '.');
       if (ss.work_order.install_instructions) lines.push('Instructions:\n' + ss.work_order.install_instructions);

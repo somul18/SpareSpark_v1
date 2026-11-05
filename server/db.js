@@ -2,7 +2,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { seed } from './seed.js';
+import { seed, seedProcurement } from './seed.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS robots (
@@ -153,7 +153,53 @@ CREATE TABLE IF NOT EXISTS webhook_log (
 );
 
 CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS vendors (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  contact_email TEXT,
+  lead_time_days INTEGER NOT NULL DEFAULT 5
+);
+
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id INTEGER PRIMARY KEY,
+  number TEXT UNIQUE NOT NULL,
+  incident_id INTEGER REFERENCES incidents(id),     -- NULL = stock replenishment
+  part_id INTEGER NOT NULL REFERENCES parts(id),
+  vendor_id INTEGER REFERENCES vendors(id),
+  qty INTEGER NOT NULL CHECK (qty > 0),
+  unit_cost REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'Pending Approval',  -- Pending Approval | Ordered | Shipped | Received | Rejected
+  reason TEXT,
+  requested_by TEXT,
+  approved_by TEXT,
+  approval_comment TEXT,
+  tracking_ref TEXT,
+  received_qty INTEGER,
+  received_by TEXT,
+  created_at TEXT NOT NULL,
+  approved_at TEXT,
+  expected_at TEXT,
+  shipped_at TEXT,
+  received_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS po_one_open_per_incident ON purchase_orders(incident_id)
+  WHERE incident_id IS NOT NULL AND status NOT IN ('Rejected');
 `;
+
+// Columns added after the first release; applied to existing databases on startup.
+const MIGRATIONS = [
+  ['parts', 'vendor_id', 'INTEGER REFERENCES vendors(id)'],
+  ['parts', 'unit_cost', 'REAL'],
+  ['parts', 'reorder_qty', 'INTEGER NOT NULL DEFAULT 1'],
+];
+
+function migrate(db) {
+  for (const [table, col, type] of MIGRATIONS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  }
+}
 
 export function now() {
   return new Date().toISOString();
@@ -164,8 +210,11 @@ export function openDb(file = process.env.SPARESPARK_DB || './data/sparespark.db
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM robots').get();
   if (n === 0) seed(db);
+  else seedProcurement(db); // existing databases get vendors and part costs
+
   return db;
 }
 

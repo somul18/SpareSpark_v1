@@ -14,12 +14,17 @@ import { llmEnabled } from './llm.js';
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.ico': 'image/x-icon' };
 
-export function createApp({ dbFile, stepMs, repairMs } = {}) {
+export function createApp({ dbFile, stepMs, repairMs, vendorMs } = {}) {
   const db = openDb(dbFile);
   let workflow;
   const serialize = (id, opts) => serializeIncident(db, workflow, id, opts);
   workflow = new Workflow(db, { stepMs, onChange: makeWebhookSender(db, serialize) });
-  if (demoEnabled()) attachDemo(workflow, repairMs !== undefined ? { repairMs } : undefined);
+  if (demoEnabled()) {
+    const opts = {};
+    if (repairMs !== undefined) opts.repairMs = repairMs;
+    if (vendorMs !== undefined) opts.vendorMs = vendorMs;
+    attachDemo(workflow, opts);
+  }
 
   const routes = [];
   const route = (method, pattern, handler) => {
@@ -45,7 +50,9 @@ export function createApp({ dbFile, stepMs, repairMs } = {}) {
   route('GET', '/api/robots', () => db.prepare(`SELECT r.*, i.number AS incident_number, i.stage AS incident_stage, i.selected_part_number, i.match_type,
       i.first_time_fix, i.sla_status, i.approval_status
     FROM robots r LEFT JOIN incidents i ON i.id = r.current_incident_id ORDER BY r.id`).all());
-  route('GET', '/api/parts', () => db.prepare('SELECT *, qty_on_hand - qty_reserved AS available FROM parts ORDER BY part_number').all());
+  route('GET', '/api/parts', () => db.prepare(`SELECT p.*, p.qty_on_hand - p.qty_reserved AS available, v.name AS vendor_name,
+      (SELECT COALESCE(SUM(qty), 0) FROM purchase_orders po WHERE po.part_id = p.id AND po.status IN ('Ordered','Shipped')) AS on_order
+    FROM parts p LEFT JOIN vendors v ON v.id = p.vendor_id ORDER BY p.part_number`).all());
   route('GET', '/api/fault-codes', () => db.prepare('SELECT * FROM fault_codes ORDER BY code').all());
   route('GET', '/api/technicians', () => db.prepare('SELECT * FROM technicians').all());
   route('GET', '/api/knowledge', ({ query }) => {
@@ -108,6 +115,20 @@ export function createApp({ dbFile, stepMs, repairMs } = {}) {
       LEFT JOIN technicians t ON t.id = w.technician_id ORDER BY w.id DESC`).all());
   route('GET', '/api/webhooks', () => db.prepare('SELECT * FROM webhook_log ORDER BY id DESC LIMIT 50').all());
   route('GET', '/api/metrics', () => metrics(db));
+
+  // ----- procurement -----
+  route('GET', '/api/vendors', () => db.prepare('SELECT * FROM vendors ORDER BY name').all());
+  route('GET', '/api/purchase-orders', ({ query }) => {
+    const status = query.get('status');
+    const rows = db.prepare(`SELECT id FROM purchase_orders ${status ? 'WHERE status = ?' : ''} ORDER BY id DESC LIMIT 200`).all(...(status ? [status] : []));
+    return rows.map((r) => workflow.getPo(r.id));
+  });
+  route('POST', '/api/purchase-orders', ({ body, res }) => { res.statusCode = 201; return workflow.createPurchaseOrder({ ...(body || {}), incident_id: null }); });
+  route('GET', '/api/purchase-orders/:id', ({ params }) => workflow.getPo(params.id));
+  route('POST', '/api/purchase-orders/:id/approve', ({ params, body }) => workflow.approvePo(params.id, body || {}));
+  route('POST', '/api/purchase-orders/:id/reject', ({ params, body }) => workflow.rejectPo(params.id, body || {}));
+  route('POST', '/api/purchase-orders/:id/ship', ({ params, body }) => workflow.shipPo(params.id, body || {}));
+  route('POST', '/api/purchase-orders/:id/receive', ({ params, body }) => workflow.receivePo(params.id, body || {}));
 
   // ----- demo -----
   route('POST', '/api/demo/reset', () => { requireDemo(); resetDemo(workflow); return { ok: true }; });
@@ -203,7 +224,31 @@ export function metrics(db) {
   const ai = q("SELECT COUNT(*) n FROM incidents WHERE stage = ? AND match_type IS NOT NULL AND match_type <> 'Exact'", STAGES.RESOLVED).n;
   const robots = db.prepare('SELECT status, COUNT(*) n FROM robots GROUP BY status').all();
   const pending = q('SELECT COUNT(*) n FROM incidents WHERE stage = ?', STAGES.APPROVAL).n;
+  const po = q(`SELECT
+      SUM(status IN ('Pending Approval','Ordered','Shipped')) open_n,
+      SUM(status = 'Pending Approval') pending,
+      SUM(status IN ('Ordered','Shipped')) in_transit,
+      SUM(status = 'Received') received,
+      SUM(CASE WHEN status IN ('Ordered','Shipped','Received') THEN qty * unit_cost ELSE 0 END) spend,
+      SUM(CASE WHEN status IN ('Ordered','Shipped') THEN qty * unit_cost ELSE 0 END) on_order_value,
+      AVG(CASE WHEN status = 'Received' THEN (julianday(received_at) - julianday(created_at)) * 86400 END) cycle_s,
+      SUM(status = 'Received' AND received_at <= expected_at) on_time
+    FROM purchase_orders`);
+  const stockouts = q('SELECT COUNT(DISTINCT incident_id) n FROM purchase_orders WHERE incident_id IS NOT NULL').n;
+  const procuredFixes = q("SELECT COUNT(*) n FROM incidents i WHERE i.stage = ? AND EXISTS (SELECT 1 FROM purchase_orders po WHERE po.incident_id = i.id AND po.status = 'Received')", STAGES.RESOLVED).n;
   return {
+    procurement: {
+      open_purchase_orders: po.open_n || 0,
+      awaiting_approval: po.pending || 0,
+      awaiting_delivery: po.in_transit || 0,
+      received: po.received || 0,
+      spend: po.spend || 0,
+      on_order_value: po.on_order_value || 0,
+      avg_cycle_seconds: po.cycle_s ?? null,
+      on_time_delivery_rate: po.received ? (po.on_time || 0) / po.received : null,
+      stockout_incidents: stockouts,
+      repairs_unblocked_by_procurement: procuredFixes,
+    },
     open_incidents: open,
     pending_approvals: pending,
     resolved_incidents: resolved.n,
@@ -223,6 +268,7 @@ function serializeIncident(db, workflow, id, { compact = false } = {}) {
   const wo = db.prepare('SELECT w.*, p.part_number FROM work_orders w JOIN parts p ON p.id = w.part_id WHERE w.incident_id = ?').get(id) || null;
   const reservation = db.prepare('SELECT r.*, p.part_number, p.bin FROM reservations r JOIN parts p ON p.id = r.part_id WHERE r.incident_id = ?').get(id) || null;
   const seq = db.prepare('SELECT MAX(id) m FROM events WHERE incident_id = ?').get(id).m || 0;
+  const poRow = db.prepare('SELECT id FROM purchase_orders WHERE incident_id = ? ORDER BY id DESC LIMIT 1').get(id);
   const rec = inc.recommendation_json ? JSON.parse(inc.recommendation_json) : null;
   const out = {
     ...inc,
@@ -233,6 +279,7 @@ function serializeIncident(db, workflow, id, { compact = false } = {}) {
     technician: tech,
     work_order: wo,
     reservation,
+    purchase_order: poRow ? workflow.getPo(poRow.id) : null,
     progress: workflow.stagePath(inc),
     recommendation: rec && (compact ? compactRec(rec) : rec),
   };
