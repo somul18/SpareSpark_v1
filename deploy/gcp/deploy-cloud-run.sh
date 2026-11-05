@@ -30,6 +30,21 @@ cd "$(dirname "$0")/../.."
 echo "==> Enabling Cloud Run, Cloud Build and Artifact Registry in ${PROJECT}"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project "${PROJECT}"
 
+# Source deploys build with the project's default compute service account. Newer projects no longer
+# give it Editor, so the build fails with "storage.objects.get access ... denied" on the uploaded
+# source. Cloud Run Builder is the role Google recommends for it (source bucket, Artifact Registry, logs).
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format 'value(projectNumber)')"
+BUILD_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+echo "==> Granting Cloud Run Builder to the build service account ${BUILD_SA}"
+if ! gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member "serviceAccount:${BUILD_SA}" \
+    --role roles/run.builder \
+    --condition None \
+    --quiet >/dev/null; then
+  echo "WARNING: could not grant roles/run.builder to ${BUILD_SA}." >&2
+  echo "         If the build fails with a storage.objects.get error, ask a project owner to grant it." >&2
+fi
+
 ENV_VARS="SPARESPARK_DB=/data/sparespark.db,SPARESPARK_DEMO=on"
 if [[ "${PUBLIC:-0}" != "1" ]]; then
   SPARESPARK_API_KEY="${SPARESPARK_API_KEY:-$(openssl rand -hex 16)}"

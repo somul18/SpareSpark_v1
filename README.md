@@ -455,8 +455,9 @@ PROJECT=<project-id> ./deploy/gcp/deploy-cloud-run.sh
 
 The script:
 1. Enables Cloud Run, Cloud Build and Artifact Registry.
-2. Builds and deploys the `sparespark` service.
-3. Prints the public URL and an API key. The console asks for the key once per browser.
+2. Grants **Cloud Run Builder** (`roles/run.builder`) to the project's default compute service account, which Cloud Build uses for source deploys. Without it, newer projects fail with `storage.objects.get access ... denied`.
+3. Builds and deploys the `sparespark` service.
+4. Prints the public URL and an API key. The console asks for the key once per browser.
 
 | Setting | Default | Meaning |
 |---|---|---|
